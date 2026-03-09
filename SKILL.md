@@ -1,13 +1,13 @@
 ---
 name: hospitalityclaw
 version: 1.0.0
-description: AI-native hospitality management ERP. 80 actions across 8 domains -- rooms, reservations, front desk, housekeeping, guests, revenue, F&B, and reports. Operator-side hotel management with rate plans, group blocks, folio charges, housekeeping inspections, guest preferences, and RevPAR analytics. Built on ERPClaw foundation.
-author: AvanSaber / Nikhil Jathar
-homepage: https://www.hospitalityclaw.ai
+description: AI-native hospitality management ERP. 73 actions across 8 domains -- rooms, reservations, front desk, housekeeping, guests, revenue, F&B, and reports. Operator-side hotel management with rate plans, group blocks, folio charges, housekeeping inspections, guest preferences, and RevPAR analytics. Built on ERPClaw foundation.
+author: AvanSaber
+homepage: https://github.com/avansaber/hospitalityclaw
 source: https://github.com/avansaber/hospitalityclaw
 tier: 4
 category: hospitality
-requires: [erpclaw-setup, erpclaw-gl, erpclaw-selling, erpclaw-buying, erpclaw-payments]
+requires: [erpclaw]
 database: ~/.openclaw/erpclaw/data.sqlite
 user-invocable: true
 tags: [hospitalityclaw, hospitality, hotel, rooms, reservations, front-desk, housekeeping, guests, revenue, fnb, room-service, minibar, rate-plan, group-block, folio, revpar, adr, occupancy]
@@ -29,7 +29,7 @@ Guest-facing booking is handled by third-party channels (Booking.com, Expedia); 
 
 - **Local-only**: All data stored in `~/.openclaw/erpclaw/data.sqlite`
 - **No external API calls**: Zero network calls in any code path
-- **No credentials required**: Uses erpclaw_lib shared library (installed by erpclaw-setup)
+- **No credentials required**: Uses erpclaw_lib shared library (installed by erpclaw)
 - **SQL injection safe**: All queries use parameterized statements
 - **Immutable audit trail**: All actions write to audit_log
 
@@ -43,7 +43,7 @@ front desk, room type, room status, cleaning, inspection, loyalty, VIP, outlet, 
 
 If the database does not exist or you see "no such table" errors:
 ```
-python3 {baseDir}/../erpclaw-setup/scripts/db_query.py --action initialize-database
+python3 {baseDir}/../erpclaw/scripts/erpclaw-setup/db_query.py --action initialize-database
 python3 {baseDir}/init_db.py
 python3 {baseDir}/scripts/db_query.py --action status
 ```
@@ -58,7 +58,7 @@ python3 {baseDir}/scripts/db_query.py --action status
 
 **2. Register a guest and create reservation:**
 ```
---action hospitality-add-guest --company-id {id} --name "John Smith" --email "john@example.com" --phone "555-0100"
+--action hospitality-add-guest --company-id {id} --customer-name "John Smith" --email "john@example.com" --phone "555-0100"
 --action hospitality-add-reservation --company-id {id} --guest-id {id} --room-type-id {id} --check-in-date "2026-03-15" --check-out-date "2026-03-18" --rate-amount "199.00"
 --action hospitality-confirm-reservation --reservation-id {id}
 ```
@@ -136,8 +136,8 @@ For all actions: `python3 {baseDir}/scripts/db_query.py --action <action> [flags
 ### Guests (8 actions)
 | Action | Required Flags | Optional Flags |
 |--------|---------------|----------------|
-| `hospitality-add-guest` | `--company-id --name` | `--email --phone --id-type --id-number --nationality --vip-level` |
-| `hospitality-update-guest` | `--guest-id` | `--name --email --phone --id-type --id-number --nationality --vip-level` |
+| `hospitality-add-guest` | `--company-id --customer-name` | `--customer-type --email --phone --id-type --id-number --nationality --vip-level` |
+| `hospitality-update-guest` | `--guest-id` | `--customer-name --email --phone --id-type --id-number --nationality --vip-level` |
 | `hospitality-get-guest` | `--guest-id` | |
 | `hospitality-list-guests` | | `--company-id --vip-level --search --limit --offset` |
 | `hospitality-add-guest-preference` | `--guest-id --preference-type --preference-value --company-id` | |
@@ -198,7 +198,7 @@ For all actions: `python3 {baseDir}/scripts/db_query.py --action <action> [flags
 
 ## Technical Details (Tier 3)
 
-**Tables owned (22):** hospitalityclaw_room_type, hospitalityclaw_room, hospitalityclaw_amenity, hospitalityclaw_room_amenity, hospitalityclaw_reservation, hospitalityclaw_rate_plan, hospitalityclaw_group_block, hospitalityclaw_guest_request, hospitalityclaw_folio_charge, hospitalityclaw_housekeeping_task, hospitalityclaw_inspection, hospitalityclaw_guest, hospitalityclaw_guest_preference, hospitalityclaw_rate_adjustment, hospitalityclaw_outlet, hospitalityclaw_room_service_order, hospitalityclaw_minibar_consumption
+**Tables owned (22):** hospitalityclaw_room_type, hospitalityclaw_room, hospitalityclaw_amenity, hospitalityclaw_room_amenity, hospitalityclaw_reservation, hospitalityclaw_rate_plan, hospitalityclaw_group_block, hospitalityclaw_guest_request, hospitalityclaw_folio_charge, hospitalityclaw_housekeeping_task, hospitalityclaw_inspection, hospitalityclaw_guest_ext (FKs to core customer), hospitalityclaw_guest_preference, hospitalityclaw_rate_adjustment, hospitalityclaw_outlet, hospitalityclaw_room_service_order, hospitalityclaw_minibar_consumption
 
 **Script:** `scripts/db_query.py` routes to 8 domain modules: rooms.py, reservations.py, front_desk.py, housekeeping.py, guests.py, revenue.py, fnb.py, reports.py
 

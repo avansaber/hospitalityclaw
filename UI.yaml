@@ -1,0 +1,130 @@
+ocui_version: "1.0"
+skill: hospitalityclaw
+skill_version: "1.0.0"
+display_name: Hospitality Management
+icon: hotel
+color: "#7c3aed"
+default_entity: reservation
+
+domains:
+  - key: rooms
+    label: Rooms
+    entities: [room_type, room, amenity]
+  - key: reservations
+    label: Reservations
+    entities: [reservation, rate_plan, group_block]
+  - key: front_desk
+    label: Front Desk
+    entities: [guest_request, folio_charge]
+  - key: housekeeping
+    label: Housekeeping
+    entities: [housekeeping_task, inspection]
+  - key: guests
+    label: Guests
+    entities: [guest, guest_preference]
+  - key: revenue
+    label: Revenue
+    entities: [rate_adjustment]
+  - key: fnb
+    label: Food & Beverage
+    entities: [outlet, room_service_order, minibar_consumption]
+
+dashboard:
+  kpis:
+    - key: total_rooms
+      label: "Rooms"
+      type: count
+      action: hospitality-list-rooms
+      icon: door-open
+      drill_action: hospitality-list-rooms
+    - key: todays_checkins
+      label: "Today's Check-Ins"
+      type: count
+      action: hospitality-list-reservations
+      filter: { reservation-status: confirmed }
+      severity: info
+      icon: log-in
+      drill_action: hospitality-list-reservations
+      drill_filter: { reservation-status: confirmed }
+    - key: occupied_rooms
+      label: "Occupied"
+      type: count
+      action: hospitality-list-rooms
+      filter: { room-status: occupied }
+      severity: success
+      icon: bed
+      drill_action: hospitality-list-rooms
+      drill_filter: { room-status: occupied }
+    - key: pending_housekeeping
+      label: "Pending Housekeeping"
+      type: count
+      action: hospitality-list-housekeeping-tasks
+      filter: { task-status: pending }
+      severity: warning
+      icon: spray-can
+      drill_action: hospitality-list-housekeeping-tasks
+      drill_filter: { task-status: pending }
+    - key: open_requests
+      label: "Guest Requests"
+      type: count
+      action: hospitality-list-guest-requests
+      filter: { request-status: open }
+      severity: warning
+      icon: bell
+      drill_action: hospitality-list-guest-requests
+      drill_filter: { request-status: open }
+  quick_actions:
+    - action: hospitality-add-guest
+      label: "New Guest"
+      icon: user-plus
+    - action: hospitality-add-reservation
+      label: "New Reservation"
+      icon: calendar-plus
+    - action: hospitality-check-in
+      label: "Check In"
+      icon: log-in
+    - action: hospitality-check-out
+      label: "Check Out"
+      icon: log-out
+    - action: hospitality-add-housekeeping-task
+      label: "Housekeeping Task"
+      icon: spray-can
+    - action: hospitality-add-room-service-order
+      label: "Room Service"
+      icon: utensils
+
+workflows:
+  - after: hospitality-add-guest
+    suggest:
+      - action: hospitality-add-reservation
+        label: "Create reservation"
+        pass: { guest-id: id }
+      - action: hospitality-add-guest-preference
+        label: "Record preferences"
+        pass: { guest-id: id }
+  - after: hospitality-add-reservation
+    suggest:
+      - action: hospitality-confirm-reservation
+        label: "Confirm reservation"
+        pass: { reservation-id: id }
+  - after: hospitality-confirm-reservation
+    suggest:
+      - action: hospitality-check-in
+        label: "Check in guest"
+        pass: { reservation-id: id }
+  - after: hospitality-check-in
+    suggest:
+      - action: hospitality-add-charge
+        label: "Add folio charge"
+        pass: { reservation-id: id }
+      - action: hospitality-add-room-service-order
+        label: "Order room service"
+        pass: { reservation-id: id }
+  - after: hospitality-check-out
+    suggest:
+      - action: hospitality-add-housekeeping-task
+        label: "Schedule room cleaning"
+        pass: { room-id: room_id }
+      - action: hospitality-add-inspection
+        label: "Inspect room"
+        pass: { room-id: room_id }

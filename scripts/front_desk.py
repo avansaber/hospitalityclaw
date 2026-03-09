@@ -19,6 +19,13 @@ try:
 except ImportError:
     pass
 
+# GL posting -- optional (graceful degradation if erpclaw-setup not installed)
+try:
+    from erpclaw_lib.gl_posting import insert_gl_entries
+    HAS_GL = True
+except ImportError:
+    HAS_GL = False
+
 _now_iso = lambda: datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 VALID_REQUEST_TYPES = ("housekeeping", "maintenance", "amenity", "food", "other")
@@ -73,9 +80,9 @@ def check_in(conn, args):
         "UPDATE hospitalityclaw_room SET room_status = 'occupied', updated_at = ? WHERE id = ?",
         (now, room_id)
     )
-    # Update guest total_stays
+    # Update guest_ext total_stays
     conn.execute(
-        "UPDATE hospitalityclaw_guest SET total_stays = total_stays + 1, updated_at = ? WHERE id = ?",
+        "UPDATE hospitalityclaw_guest_ext SET total_stays = total_stays + 1, updated_at = ? WHERE id = ?",
         (now, res["guest_id"])
     )
 
@@ -86,8 +93,98 @@ def check_in(conn, args):
 
 
 # ---------------------------------------------------------------------------
-# 2. check-out
+# 2. check-out (with optional GL posting for folio close)
 # ---------------------------------------------------------------------------
+def _build_checkout_gl_entries(conn, reservation_id, receivable_account_id,
+                                revenue_account_id, cost_center_id, customer_id):
+    """Build balanced GL entries for guest checkout / folio close.
+
+    DR: Accounts Receivable (total folio) -- party_type=customer, party_id=customer_id
+    CR: Revenue accounts by charge type:
+        - 'room' charges  -> revenue_account_id (Room Revenue)
+        - 'food','minibar' charges -> revenue_account_id (F&B Revenue)
+        - all other charges -> revenue_account_id (Other Revenue)
+
+    If only one revenue account is provided, all credits go there.
+    Returns list of entry dicts, or empty list if no charges.
+    """
+    # Fetch all folio charges and aggregate by category using Python Decimal
+    rows = conn.execute(
+        "SELECT charge_type, amount FROM hospitalityclaw_folio_charge WHERE reservation_id = ?",
+        (reservation_id,)
+    ).fetchall()
+
+    if not rows:
+        return []
+
+    # Map charge_types to revenue categories
+    ROOM_TYPES = {"room"}
+    FNB_TYPES = {"food", "minibar"}
+    # everything else is "other": phone, laundry, parking, other
+
+    room_total = Decimal("0")
+    fnb_total = Decimal("0")
+    other_total = Decimal("0")
+
+    for row in rows:
+        ct = row[0]  # charge_type
+        amt = to_decimal(row[1])
+        if ct in ROOM_TYPES:
+            room_total += amt
+        elif ct in FNB_TYPES:
+            fnb_total += amt
+        else:
+            other_total += amt
+
+    room_total = round_currency(room_total)
+    fnb_total = round_currency(fnb_total)
+    other_total = round_currency(other_total)
+    grand_total = round_currency(room_total + fnb_total + other_total)
+
+    if grand_total <= Decimal("0"):
+        return []
+
+    entries = []
+
+    # DR: Accounts Receivable for grand total
+    entries.append({
+        "account_id": receivable_account_id,
+        "debit": str(grand_total),
+        "credit": "0",
+        "party_type": "customer",
+        "party_id": customer_id,
+    })
+
+    # CR: Revenue entries (only add non-zero buckets)
+    # All go to the same revenue_account_id (single revenue account provided)
+    # but separated for clarity in the ledger via remarks
+    if room_total > Decimal("0"):
+        entries.append({
+            "account_id": revenue_account_id,
+            "debit": "0",
+            "credit": str(room_total),
+            "cost_center_id": cost_center_id,
+        })
+
+    if fnb_total > Decimal("0"):
+        entries.append({
+            "account_id": revenue_account_id,
+            "debit": "0",
+            "credit": str(fnb_total),
+            "cost_center_id": cost_center_id,
+        })
+
+    if other_total > Decimal("0"):
+        entries.append({
+            "account_id": revenue_account_id,
+            "debit": "0",
+            "credit": str(other_total),
+            "cost_center_id": cost_center_id,
+        })
+
+    return entries
+
+
 def check_out(conn, args):
     res = _validate_reservation(conn, getattr(args, "reservation_id", None))
     if res["reservation_status"] != "checked_in":
@@ -106,20 +203,88 @@ def check_out(conn, args):
             (now, res["room_id"])
         )
 
-    # Update guest total_spent
-    folio_total = conn.execute(
-        "SELECT COALESCE(SUM(CAST(amount AS REAL)), 0) FROM hospitalityclaw_folio_charge WHERE reservation_id = ?",
+    # Update guest_ext total_spent (use Decimal for accuracy)
+    folio_rows = conn.execute(
+        "SELECT amount FROM hospitalityclaw_folio_charge WHERE reservation_id = ?",
         (res["id"],)
-    ).fetchone()[0]
+    ).fetchall()
+    folio_total = sum(to_decimal(r[0]) for r in folio_rows) if folio_rows else Decimal("0")
+    folio_total = round_currency(folio_total)
+
+    # Update guest_ext total_spent using Decimal math (not CAST AS REAL)
+    guest_row = conn.execute(
+        "SELECT total_spent FROM hospitalityclaw_guest_ext WHERE id = ?",
+        (res["guest_id"],)
+    ).fetchone()
+    prev_spent = to_decimal(guest_row[0]) if guest_row else Decimal("0")
+    new_spent = round_currency(prev_spent + folio_total)
     conn.execute(
-        "UPDATE hospitalityclaw_guest SET total_spent = CAST((CAST(total_spent AS REAL) + ?) AS TEXT), updated_at = ? WHERE id = ?",
-        (folio_total, now, res["guest_id"])
+        "UPDATE hospitalityclaw_guest_ext SET total_spent = ?, updated_at = ? WHERE id = ?",
+        (str(new_spent), now, res["guest_id"])
     )
+
+    # --- GL Posting (optional -- graceful degradation) ---
+    gl_entry_ids = []
+    gl_error = None
+    receivable_account_id = getattr(args, "receivable_account_id", None)
+    revenue_account_id = getattr(args, "revenue_account_id", None)
+    cost_center_id = getattr(args, "cost_center_id", None)
+
+    if HAS_GL and receivable_account_id and revenue_account_id and folio_total > Decimal("0"):
+        try:
+            # Look up customer_id from guest_ext
+            guest_ext = conn.execute(
+                "SELECT customer_id FROM hospitalityclaw_guest_ext WHERE id = ?",
+                (res["guest_id"],)
+            ).fetchone()
+            customer_id = guest_ext[0] if guest_ext else None
+
+            if not customer_id:
+                gl_error = "Guest has no linked customer_id; GL posting skipped"
+            else:
+                gl_entries = _build_checkout_gl_entries(
+                    conn, res["id"],
+                    receivable_account_id, revenue_account_id,
+                    cost_center_id, customer_id,
+                )
+
+                if gl_entries:
+                    posting_date = now[:10]  # ISO date portion
+                    gl_entry_ids = insert_gl_entries(
+                        conn, gl_entries,
+                        voucher_type="hospitality_checkout",
+                        voucher_id=res["id"],
+                        posting_date=posting_date,
+                        company_id=res["company_id"],
+                        remarks=f"HospitalityClaw checkout folio close for reservation {res['id']}",
+                    )
+                    # Store GL entry IDs on the reservation
+                    conn.execute(
+                        "UPDATE hospitalityclaw_reservation SET gl_entry_ids = ? WHERE id = ?",
+                        (json.dumps(gl_entry_ids), res["id"])
+                    )
+        except Exception as e:
+            # GL posting is optional -- do not block checkout
+            gl_error = str(e)
 
     audit(conn, "hospitalityclaw_reservation", res["id"], "hospitality-check-out", None)
     conn.commit()
-    ok({"reservation_id": res["id"], "reservation_status": "checked_out",
-        "folio_total": str(round_currency(to_decimal(str(folio_total))))})
+
+    result = {
+        "reservation_id": res["id"],
+        "reservation_status": "checked_out",
+        "folio_total": str(folio_total),
+    }
+    if gl_entry_ids:
+        result["gl_entry_ids"] = gl_entry_ids
+        result["gl_posted"] = True
+    elif gl_error:
+        result["gl_posted"] = False
+        result["gl_warning"] = gl_error
+    else:
+        result["gl_posted"] = False
+
+    ok(result)
 
 
 # ---------------------------------------------------------------------------

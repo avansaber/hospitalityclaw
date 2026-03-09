@@ -94,6 +94,8 @@ def main():
 
     # -- GUESTS domain --
     parser.add_argument("--guest-id")
+    parser.add_argument("--customer-name")
+    parser.add_argument("--customer-type")
     parser.add_argument("--email")
     parser.add_argument("--phone")
     parser.add_argument("--id-type")
@@ -132,6 +134,10 @@ def main():
     parser.add_argument("--new-room-id")
     parser.add_argument("--charge-type")
     parser.add_argument("--amount")
+    # GL posting (optional -- checkout folio close)
+    parser.add_argument("--receivable-account-id", help="AR account for checkout GL posting")
+    parser.add_argument("--revenue-account-id", help="Revenue account for checkout GL posting")
+    parser.add_argument("--cost-center-id", help="Cost center for revenue GL entries")
 
     # -- HOUSEKEEPING domain --
     parser.add_argument("--task-id")

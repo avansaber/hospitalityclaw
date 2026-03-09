@@ -43,7 +43,7 @@ def _validate_company(conn, company_id):
 def _validate_guest(conn, guest_id):
     if not guest_id:
         err("--guest-id is required")
-    row = conn.execute("SELECT id FROM hospitalityclaw_guest WHERE id = ?", (guest_id,)).fetchone()
+    row = conn.execute("SELECT id FROM hospitalityclaw_guest_ext WHERE id = ?", (guest_id,)).fetchone()
     if not row:
         err(f"Guest {guest_id} not found")
 
@@ -235,8 +235,11 @@ def get_reservation(conn, args):
         err(f"Reservation {res_id} not found")
     data = row_to_dict(row)
 
-    # Enrich with guest name and room type name
-    g = conn.execute("SELECT name FROM hospitalityclaw_guest WHERE id = ?", (data["guest_id"],)).fetchone()
+    # Enrich with guest name (via guest_ext → customer) and room type name
+    g = conn.execute(
+        "SELECT c.customer_name FROM hospitalityclaw_guest_ext ge JOIN customer c ON c.id = ge.customer_id WHERE ge.id = ?",
+        (data["guest_id"],)
+    ).fetchone()
     data["guest_name"] = g[0] if g else None
     rt = conn.execute("SELECT name FROM hospitalityclaw_room_type WHERE id = ?", (data["room_type_id"],)).fetchone()
     data["room_type_name"] = rt[0] if rt else None

@@ -162,8 +162,8 @@ def guest_satisfaction_report(conn, args):
     ).fetchone()[0]
 
     vip_guests = conn.execute(
-        "SELECT COUNT(*) FROM hospitalityclaw_guest "
-        "WHERE company_id = ? AND vip_level != 'none'",
+        "SELECT COUNT(*) FROM hospitalityclaw_guest_ext "
+        "WHERE company_id = ? AND vip_level != 'regular'",
         (args.company_id,)
     ).fetchone()[0]
 

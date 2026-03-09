@@ -101,31 +101,32 @@ def create_hospitalityclaw_tables(db_path):
         CREATE UNIQUE INDEX IF NOT EXISTS idx_hospitalityclaw_room_amenity_unique ON hospitalityclaw_room_amenity(room_id, amenity_id);
 
         -- ── GUESTS domain ────────────────────────────────────────────
-        CREATE TABLE IF NOT EXISTS hospitalityclaw_guest (
+        -- Extension table: links to core customer(id) for name/email/phone.
+        -- DO NOT store name, email, phone here — they live in core customer table.
+        CREATE TABLE IF NOT EXISTS hospitalityclaw_guest_ext (
             id TEXT PRIMARY KEY,
-            naming_series TEXT,
-            name TEXT NOT NULL,
-            email TEXT,
-            phone TEXT,
+            naming_series TEXT DEFAULT 'HGST-',
+            customer_id TEXT NOT NULL REFERENCES customer(id),
             id_type TEXT,
             id_number TEXT,
             nationality TEXT,
-            vip_level TEXT NOT NULL DEFAULT 'none'
-                CHECK(vip_level IN ('none','silver','gold','platinum')),
+            vip_level TEXT NOT NULL DEFAULT 'regular'
+                CHECK(vip_level IN ('regular','silver','gold','platinum','diamond')),
             loyalty_points INTEGER NOT NULL DEFAULT 0,
             total_stays INTEGER NOT NULL DEFAULT 0,
             total_spent TEXT NOT NULL DEFAULT '0',
             is_active INTEGER NOT NULL DEFAULT 1,
-            company_id TEXT NOT NULL,
-            created_at TEXT NOT NULL,
-            updated_at TEXT NOT NULL
+            company_id TEXT NOT NULL REFERENCES company(id),
+            created_at TEXT DEFAULT (datetime('now')),
+            updated_at TEXT DEFAULT (datetime('now'))
         );
-        CREATE INDEX IF NOT EXISTS idx_hospitalityclaw_guest_company ON hospitalityclaw_guest(company_id);
-        CREATE INDEX IF NOT EXISTS idx_hospitalityclaw_guest_vip ON hospitalityclaw_guest(vip_level);
+        CREATE INDEX IF NOT EXISTS idx_hospitalityclaw_guest_ext_company ON hospitalityclaw_guest_ext(company_id);
+        CREATE INDEX IF NOT EXISTS idx_hospitalityclaw_guest_ext_vip ON hospitalityclaw_guest_ext(vip_level);
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_hospitalityclaw_guest_ext_customer ON hospitalityclaw_guest_ext(customer_id, company_id);
 
         CREATE TABLE IF NOT EXISTS hospitalityclaw_guest_preference (
             id TEXT PRIMARY KEY,
-            guest_id TEXT NOT NULL REFERENCES hospitalityclaw_guest(id),
+            guest_id TEXT NOT NULL REFERENCES hospitalityclaw_guest_ext(id),
             preference_type TEXT NOT NULL
                 CHECK(preference_type IN ('room','pillow','floor','diet','newspaper','other')),
             preference_value TEXT NOT NULL,
@@ -155,7 +156,7 @@ def create_hospitalityclaw_tables(db_path):
         CREATE TABLE IF NOT EXISTS hospitalityclaw_reservation (
             id TEXT PRIMARY KEY,
             naming_series TEXT,
-            guest_id TEXT NOT NULL REFERENCES hospitalityclaw_guest(id),
+            guest_id TEXT NOT NULL REFERENCES hospitalityclaw_guest_ext(id),
             room_type_id TEXT NOT NULL REFERENCES hospitalityclaw_room_type(id),
             room_id TEXT REFERENCES hospitalityclaw_room(id),
             check_in_date TEXT NOT NULL,
@@ -171,6 +172,7 @@ def create_hospitalityclaw_tables(db_path):
             source TEXT DEFAULT 'direct'
                 CHECK(source IN ('direct','phone','online','group','walk_in')),
             special_requests TEXT,
+            gl_entry_ids TEXT,
             company_id TEXT NOT NULL,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL

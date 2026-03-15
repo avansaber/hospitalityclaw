@@ -17,6 +17,7 @@ try:
     from erpclaw_lib.naming import get_next_name, ENTITY_PREFIXES
     from erpclaw_lib.response import ok, err, row_to_dict
     from erpclaw_lib.audit import audit
+    from erpclaw_lib.query import Q, P, Table, Field, fn, Order, insert_row
 
     ENTITY_PREFIXES.setdefault("hospitalityclaw_reservation", "RES-")
     ENTITY_PREFIXES.setdefault("hospitalityclaw_rate_plan", "RPL-")
@@ -32,27 +33,38 @@ VALID_RATE_TYPES = ("standard", "weekend", "seasonal", "promotional")
 VALID_BLOCK_STATUSES = ("tentative", "confirmed", "released")
 
 
+_t_company = Table("company")
+_t_guest_ext = Table("hospitalityclaw_guest_ext")
+_t_room_type = Table("hospitalityclaw_room_type")
+_t_reservation = Table("hospitalityclaw_reservation")
+_t_rate_plan = Table("hospitalityclaw_rate_plan")
+_t_room = Table("hospitalityclaw_room")
+_t_group_block = Table("hospitalityclaw_group_block")
+_t_folio = Table("hospitalityclaw_folio_charge")
+_t_customer = Table("customer")
+
+
 def _validate_company(conn, company_id):
     if not company_id:
         err("--company-id is required")
-    row = conn.execute("SELECT id FROM company WHERE id = ?", (company_id,)).fetchone()
-    if not row:
+    q = Q.from_(_t_company).select(_t_company.id).where(_t_company.id == P())
+    if not conn.execute(q.get_sql(), (company_id,)).fetchone():
         err(f"Company {company_id} not found")
 
 
 def _validate_guest(conn, guest_id):
     if not guest_id:
         err("--guest-id is required")
-    row = conn.execute("SELECT id FROM hospitalityclaw_guest_ext WHERE id = ?", (guest_id,)).fetchone()
-    if not row:
+    q = Q.from_(_t_guest_ext).select(_t_guest_ext.id).where(_t_guest_ext.id == P())
+    if not conn.execute(q.get_sql(), (guest_id,)).fetchone():
         err(f"Guest {guest_id} not found")
 
 
 def _validate_room_type(conn, room_type_id):
     if not room_type_id:
         err("--room-type-id is required")
-    row = conn.execute("SELECT id FROM hospitalityclaw_room_type WHERE id = ?", (room_type_id,)).fetchone()
-    if not row:
+    q = Q.from_(_t_room_type).select(_t_room_type.id).where(_t_room_type.id == P())
+    if not conn.execute(q.get_sql(), (room_type_id,)).fetchone():
         err(f"Room type {room_type_id} not found")
 
 
@@ -103,27 +115,28 @@ def add_reservation(conn, args):
 
     rate_plan_id = getattr(args, "rate_plan_id", None)
     if rate_plan_id:
-        rp = conn.execute("SELECT id FROM hospitalityclaw_rate_plan WHERE id = ?", (rate_plan_id,)).fetchone()
-        if not rp:
+        q = Q.from_(_t_rate_plan).select(_t_rate_plan.id).where(_t_rate_plan.id == P())
+        if not conn.execute(q.get_sql(), (rate_plan_id,)).fetchone():
             err(f"Rate plan {rate_plan_id} not found")
 
     room_id = getattr(args, "room_id", None)
     if room_id:
-        rm = conn.execute("SELECT id FROM hospitalityclaw_room WHERE id = ?", (room_id,)).fetchone()
-        if not rm:
+        q = Q.from_(_t_room).select(_t_room.id).where(_t_room.id == P())
+        if not conn.execute(q.get_sql(), (room_id,)).fetchone():
             err(f"Room {room_id} not found")
 
     res_id = str(uuid.uuid4())
     naming = get_next_name(conn, "hospitalityclaw_reservation", company_id=args.company_id)
     now = _now_iso()
 
-    conn.execute("""
-        INSERT INTO hospitalityclaw_reservation (id, naming_series, guest_id, room_type_id, room_id,
-            check_in_date, check_out_date, nights, adults, children,
-            rate_plan_id, rate_amount, total_amount,
-            reservation_status, source, special_requests, company_id, created_at, updated_at)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-    """, (
+    sql, _ = insert_row("hospitalityclaw_reservation", {
+        "id": P(), "naming_series": P(), "guest_id": P(), "room_type_id": P(), "room_id": P(),
+        "check_in_date": P(), "check_out_date": P(), "nights": P(), "adults": P(), "children": P(),
+        "rate_plan_id": P(), "rate_amount": P(), "total_amount": P(),
+        "reservation_status": P(), "source": P(), "special_requests": P(),
+        "company_id": P(), "created_at": P(), "updated_at": P(),
+    })
+    conn.execute(sql, (
         res_id, naming, guest_id, room_type_id, room_id,
         ci, co, nights,
         int(getattr(args, "adults", None) or 1),
@@ -147,7 +160,8 @@ def update_reservation(conn, args):
     res_id = getattr(args, "reservation_id", None)
     if not res_id:
         err("--reservation-id is required")
-    row = conn.execute("SELECT * FROM hospitalityclaw_reservation WHERE id = ?", (res_id,)).fetchone()
+    q = Q.from_(_t_reservation).select(_t_reservation.star).where(_t_reservation.id == P())
+    row = conn.execute(q.get_sql(), (res_id,)).fetchone()
     if not row:
         err(f"Reservation {res_id} not found")
     current = row_to_dict(row)
@@ -168,7 +182,8 @@ def update_reservation(conn, args):
 
     rt = getattr(args, "room_type_id", None)
     if rt is not None:
-        conn.execute("SELECT id FROM hospitalityclaw_room_type WHERE id = ?", (rt,)).fetchone() or err(f"Room type {rt} not found")
+        q = Q.from_(_t_room_type).select(_t_room_type.id).where(_t_room_type.id == P())
+        conn.execute(q.get_sql(), (rt,)).fetchone() or err(f"Room type {rt} not found")
         updates.append("room_type_id = ?")
         params.append(rt)
         changed.append("room_type_id")
@@ -230,25 +245,27 @@ def get_reservation(conn, args):
     res_id = getattr(args, "reservation_id", None)
     if not res_id:
         err("--reservation-id is required")
-    row = conn.execute("SELECT * FROM hospitalityclaw_reservation WHERE id = ?", (res_id,)).fetchone()
+    q = Q.from_(_t_reservation).select(_t_reservation.star).where(_t_reservation.id == P())
+    row = conn.execute(q.get_sql(), (res_id,)).fetchone()
     if not row:
         err(f"Reservation {res_id} not found")
     data = row_to_dict(row)
 
-    # Enrich with guest name (via guest_ext → customer) and room type name
-    g = conn.execute(
-        "SELECT c.customer_name FROM hospitalityclaw_guest_ext ge JOIN customer c ON c.id = ge.customer_id WHERE ge.id = ?",
-        (data["guest_id"],)
-    ).fetchone()
+    # Enrich with guest name (via guest_ext -> customer) and room type name
+    ge = _t_guest_ext
+    c = _t_customer
+    q = (Q.from_(ge).join(c).on(c.id == ge.customer_id)
+         .select(c.customer_name).where(ge.id == P()))
+    g = conn.execute(q.get_sql(), (data["guest_id"],)).fetchone()
     data["guest_name"] = g[0] if g else None
-    rt = conn.execute("SELECT name FROM hospitalityclaw_room_type WHERE id = ?", (data["room_type_id"],)).fetchone()
+
+    q = Q.from_(_t_room_type).select(_t_room_type.name).where(_t_room_type.id == P())
+    rt = conn.execute(q.get_sql(), (data["room_type_id"],)).fetchone()
     data["room_type_name"] = rt[0] if rt else None
 
     # Folio total
-    folio_total = conn.execute(
-        "SELECT COALESCE(SUM(CAST(amount AS REAL)), 0) FROM hospitalityclaw_folio_charge WHERE reservation_id = ?",
-        (res_id,)
-    ).fetchone()[0]
+    q = Q.from_(_t_folio).select(fn.Coalesce(fn.Sum(Field("amount")), 0)).where(_t_folio.reservation_id == P())
+    folio_total = conn.execute(q.get_sql(), (res_id,)).fetchone()[0]
     data["folio_total"] = str(round_currency(to_decimal(str(folio_total))))
     ok(data)
 
@@ -257,29 +274,35 @@ def get_reservation(conn, args):
 # 4. list-reservations
 # ---------------------------------------------------------------------------
 def list_reservations(conn, args):
-    where, params = ["1=1"], []
+    t = _t_reservation
+    q_count = Q.from_(t).select(fn.Count("*"))
+    q_rows = Q.from_(t).select(t.star)
+    params = []
+
     if getattr(args, "company_id", None):
-        where.append("company_id = ?")
+        q_count = q_count.where(t.company_id == P())
+        q_rows = q_rows.where(t.company_id == P())
         params.append(args.company_id)
     if getattr(args, "guest_id", None):
-        where.append("guest_id = ?")
+        q_count = q_count.where(t.guest_id == P())
+        q_rows = q_rows.where(t.guest_id == P())
         params.append(args.guest_id)
     if getattr(args, "reservation_status", None):
-        where.append("reservation_status = ?")
+        q_count = q_count.where(t.reservation_status == P())
+        q_rows = q_rows.where(t.reservation_status == P())
         params.append(args.reservation_status)
     if getattr(args, "source", None):
-        where.append("source = ?")
+        q_count = q_count.where(t.source == P())
+        q_rows = q_rows.where(t.source == P())
         params.append(args.source)
     if getattr(args, "check_in_date", None):
-        where.append("check_in_date = ?")
+        q_count = q_count.where(t.check_in_date == P())
+        q_rows = q_rows.where(t.check_in_date == P())
         params.append(args.check_in_date)
 
-    where_sql = " AND ".join(where)
-    total = conn.execute(f"SELECT COUNT(*) FROM hospitalityclaw_reservation WHERE {where_sql}", params).fetchone()[0]
-    params.extend([args.limit, args.offset])
-    rows = conn.execute(
-        f"SELECT * FROM hospitalityclaw_reservation WHERE {where_sql} ORDER BY check_in_date DESC LIMIT ? OFFSET ?", params
-    ).fetchall()
+    total = conn.execute(q_count.get_sql(), params).fetchone()[0]
+    q_rows = q_rows.orderby(t.check_in_date, order=Order.desc).limit(P()).offset(P())
+    rows = conn.execute(q_rows.get_sql(), params + [args.limit, args.offset]).fetchall()
     ok({"rows": [row_to_dict(r) for r in rows], "total_count": total,
         "limit": args.limit, "offset": args.offset, "has_more": (args.offset + args.limit) < total})
 
@@ -291,7 +314,8 @@ def confirm_reservation(conn, args):
     res_id = getattr(args, "reservation_id", None)
     if not res_id:
         err("--reservation-id is required")
-    row = conn.execute("SELECT reservation_status FROM hospitalityclaw_reservation WHERE id = ?", (res_id,)).fetchone()
+    q = Q.from_(_t_reservation).select(_t_reservation.reservation_status).where(_t_reservation.id == P())
+    row = conn.execute(q.get_sql(), (res_id,)).fetchone()
     if not row:
         err(f"Reservation {res_id} not found")
     if row[0] != "pending":
@@ -313,7 +337,8 @@ def cancel_reservation(conn, args):
     res_id = getattr(args, "reservation_id", None)
     if not res_id:
         err("--reservation-id is required")
-    row = conn.execute("SELECT reservation_status FROM hospitalityclaw_reservation WHERE id = ?", (res_id,)).fetchone()
+    q = Q.from_(_t_reservation).select(_t_reservation.reservation_status).where(_t_reservation.id == P())
+    row = conn.execute(q.get_sql(), (res_id,)).fetchone()
     if not row:
         err(f"Reservation {res_id} not found")
     if row[0] in ("checked_in", "checked_out", "cancelled"):
@@ -357,11 +382,12 @@ def add_rate_plan(conn, args):
     naming = get_next_name(conn, "hospitalityclaw_rate_plan", company_id=args.company_id)
     now = _now_iso()
 
-    conn.execute("""
-        INSERT INTO hospitalityclaw_rate_plan (id, naming_series, name, room_type_id, rate_amount,
-            start_date, end_date, rate_type, is_active, company_id, created_at)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?)
-    """, (
+    sql, _ = insert_row("hospitalityclaw_rate_plan", {
+        "id": P(), "naming_series": P(), "name": P(), "room_type_id": P(),
+        "rate_amount": P(), "start_date": P(), "end_date": P(), "rate_type": P(),
+        "is_active": P(), "company_id": P(), "created_at": P(),
+    })
+    conn.execute(sql, (
         rp_id, naming, name, room_type_id,
         str(round_currency(to_decimal(rate_amount))),
         sd, ed, rate_type, 1, args.company_id, now,
@@ -375,23 +401,27 @@ def add_rate_plan(conn, args):
 # 8. list-rate-plans
 # ---------------------------------------------------------------------------
 def list_rate_plans(conn, args):
-    where, params = ["1=1"], []
+    t = _t_rate_plan
+    q_count = Q.from_(t).select(fn.Count("*"))
+    q_rows = Q.from_(t).select(t.star)
+    params = []
+
     if getattr(args, "company_id", None):
-        where.append("company_id = ?")
+        q_count = q_count.where(t.company_id == P())
+        q_rows = q_rows.where(t.company_id == P())
         params.append(args.company_id)
     if getattr(args, "room_type_id", None):
-        where.append("room_type_id = ?")
+        q_count = q_count.where(t.room_type_id == P())
+        q_rows = q_rows.where(t.room_type_id == P())
         params.append(args.room_type_id)
     if getattr(args, "rate_type", None):
-        where.append("rate_type = ?")
+        q_count = q_count.where(t.rate_type == P())
+        q_rows = q_rows.where(t.rate_type == P())
         params.append(args.rate_type)
 
-    where_sql = " AND ".join(where)
-    total = conn.execute(f"SELECT COUNT(*) FROM hospitalityclaw_rate_plan WHERE {where_sql}", params).fetchone()[0]
-    params.extend([args.limit, args.offset])
-    rows = conn.execute(
-        f"SELECT * FROM hospitalityclaw_rate_plan WHERE {where_sql} ORDER BY created_at DESC LIMIT ? OFFSET ?", params
-    ).fetchall()
+    total = conn.execute(q_count.get_sql(), params).fetchone()[0]
+    q_rows = q_rows.orderby(t.created_at, order=Order.desc).limit(P()).offset(P())
+    rows = conn.execute(q_rows.get_sql(), params + [args.limit, args.offset]).fetchall()
     ok({"rows": [row_to_dict(r) for r in rows], "total_count": total,
         "limit": args.limit, "offset": args.offset, "has_more": (args.offset + args.limit) < total})
 
@@ -411,19 +441,22 @@ def check_availability(conn, args):
         err("--check-out-date is required")
 
     # Total rooms of this type
-    total_rooms = conn.execute(
-        "SELECT COUNT(*) FROM hospitalityclaw_room WHERE room_type_id = ? AND company_id = ? AND room_status IN ('available','occupied')",
-        (room_type_id, args.company_id)
-    ).fetchone()[0]
+    r = _t_room
+    q = (Q.from_(r).select(fn.Count("*"))
+         .where(r.room_type_id == P())
+         .where(r.company_id == P())
+         .where(r.room_status.isin(["available", "occupied"])))
+    total_rooms = conn.execute(q.get_sql(), (room_type_id, args.company_id)).fetchone()[0]
 
     # Occupied rooms (reservations overlapping with the date range)
-    occupied = conn.execute(
-        "SELECT COUNT(*) FROM hospitalityclaw_reservation "
-        "WHERE room_type_id = ? AND company_id = ? "
-        "AND reservation_status IN ('confirmed','checked_in') "
-        "AND check_in_date < ? AND check_out_date > ?",
-        (room_type_id, args.company_id, co, ci)
-    ).fetchone()[0]
+    rv = _t_reservation
+    q = (Q.from_(rv).select(fn.Count("*"))
+         .where(rv.room_type_id == P())
+         .where(rv.company_id == P())
+         .where(rv.reservation_status.isin(["confirmed", "checked_in"]))
+         .where(rv.check_in_date < P())
+         .where(rv.check_out_date > P()))
+    occupied = conn.execute(q.get_sql(), (room_type_id, args.company_id, co, ci)).fetchone()[0]
 
     available = max(total_rooms - occupied, 0)
     ok({
@@ -462,12 +495,13 @@ def add_group_block(conn, args):
     naming = get_next_name(conn, "hospitalityclaw_group_block", company_id=args.company_id)
     now = _now_iso()
 
-    conn.execute("""
-        INSERT INTO hospitalityclaw_group_block (id, naming_series, name, contact_name, contact_email,
-            room_type_id, rooms_blocked, check_in_date, check_out_date, rate_amount,
-            block_status, company_id, created_at, updated_at)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-    """, (
+    sql, _ = insert_row("hospitalityclaw_group_block", {
+        "id": P(), "naming_series": P(), "name": P(), "contact_name": P(),
+        "contact_email": P(), "room_type_id": P(), "rooms_blocked": P(),
+        "check_in_date": P(), "check_out_date": P(), "rate_amount": P(),
+        "block_status": P(), "company_id": P(), "created_at": P(), "updated_at": P(),
+    })
+    conn.execute(sql, (
         gb_id, naming, name,
         getattr(args, "contact_name", None),
         getattr(args, "contact_email", None),
@@ -484,20 +518,23 @@ def add_group_block(conn, args):
 # 11. list-group-blocks
 # ---------------------------------------------------------------------------
 def list_group_blocks(conn, args):
-    where, params = ["1=1"], []
+    t = _t_group_block
+    q_count = Q.from_(t).select(fn.Count("*"))
+    q_rows = Q.from_(t).select(t.star)
+    params = []
+
     if getattr(args, "company_id", None):
-        where.append("company_id = ?")
+        q_count = q_count.where(t.company_id == P())
+        q_rows = q_rows.where(t.company_id == P())
         params.append(args.company_id)
     if getattr(args, "block_status", None):
-        where.append("block_status = ?")
+        q_count = q_count.where(t.block_status == P())
+        q_rows = q_rows.where(t.block_status == P())
         params.append(args.block_status)
 
-    where_sql = " AND ".join(where)
-    total = conn.execute(f"SELECT COUNT(*) FROM hospitalityclaw_group_block WHERE {where_sql}", params).fetchone()[0]
-    params.extend([args.limit, args.offset])
-    rows = conn.execute(
-        f"SELECT * FROM hospitalityclaw_group_block WHERE {where_sql} ORDER BY created_at DESC LIMIT ? OFFSET ?", params
-    ).fetchall()
+    total = conn.execute(q_count.get_sql(), params).fetchone()[0]
+    q_rows = q_rows.orderby(t.created_at, order=Order.desc).limit(P()).offset(P())
+    rows = conn.execute(q_rows.get_sql(), params + [args.limit, args.offset]).fetchall()
     ok({"rows": [row_to_dict(r) for r in rows], "total_count": total,
         "limit": args.limit, "offset": args.offset, "has_more": (args.offset + args.limit) < total})
 
@@ -510,26 +547,17 @@ def reservation_forecast_report(conn, args):
     sd = getattr(args, "start_date", None) or datetime.now(timezone.utc).strftime("%Y-%m-%d")
     ed = getattr(args, "end_date", None) or (datetime.now(timezone.utc).strftime("%Y-%m-%d"))
 
-    upcoming = conn.execute(
-        "SELECT COUNT(*) FROM hospitalityclaw_reservation "
-        "WHERE company_id = ? AND check_in_date >= ? AND check_in_date <= ? "
-        "AND reservation_status IN ('pending','confirmed')",
-        (args.company_id, sd, ed)
-    ).fetchone()[0]
+    rv = _t_reservation
+    base_where = (rv.company_id == P()) & (rv.check_in_date >= P()) & (rv.check_in_date <= P()) & rv.reservation_status.isin(["pending", "confirmed"])
 
-    total_nights = conn.execute(
-        "SELECT COALESCE(SUM(nights), 0) FROM hospitalityclaw_reservation "
-        "WHERE company_id = ? AND check_in_date >= ? AND check_in_date <= ? "
-        "AND reservation_status IN ('pending','confirmed')",
-        (args.company_id, sd, ed)
-    ).fetchone()[0]
+    q = Q.from_(rv).select(fn.Count("*")).where(base_where)
+    upcoming = conn.execute(q.get_sql(), (args.company_id, sd, ed)).fetchone()[0]
 
-    total_revenue = conn.execute(
-        "SELECT COALESCE(SUM(CAST(total_amount AS REAL)), 0) FROM hospitalityclaw_reservation "
-        "WHERE company_id = ? AND check_in_date >= ? AND check_in_date <= ? "
-        "AND reservation_status IN ('pending','confirmed')",
-        (args.company_id, sd, ed)
-    ).fetchone()[0]
+    q = Q.from_(rv).select(fn.Coalesce(fn.Sum(rv.nights), 0)).where(base_where)
+    total_nights = conn.execute(q.get_sql(), (args.company_id, sd, ed)).fetchone()[0]
+
+    q = Q.from_(rv).select(fn.Coalesce(fn.Sum(rv.total_amount), 0)).where(base_where)
+    total_revenue = conn.execute(q.get_sql(), (args.company_id, sd, ed)).fetchone()[0]
 
     ok({
         "start_date": sd,

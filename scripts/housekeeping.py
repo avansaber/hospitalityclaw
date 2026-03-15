@@ -16,6 +16,7 @@ try:
     from erpclaw_lib.decimal_utils import to_decimal, round_currency
     from erpclaw_lib.response import ok, err, row_to_dict
     from erpclaw_lib.audit import audit
+    from erpclaw_lib.query import Q, P, Table, Field, fn, Order, insert_row
 except ImportError:
     pass
 
@@ -28,7 +29,7 @@ VALID_TASK_STATUSES = ("pending", "in_progress", "completed", "skipped")
 def _validate_company(conn, company_id):
     if not company_id:
         err("--company-id is required")
-    row = conn.execute("SELECT id FROM company WHERE id = ?", (company_id,)).fetchone()
+    row = conn.execute(Q.from_(Table("company")).select(Field("id")).where(Field("id") == P()).get_sql(), (company_id,)).fetchone()
     if not row:
         err(f"Company {company_id} not found")
 
@@ -36,7 +37,7 @@ def _validate_company(conn, company_id):
 def _validate_room(conn, room_id):
     if not room_id:
         err("--room-id is required")
-    row = conn.execute("SELECT id FROM hospitalityclaw_room WHERE id = ?", (room_id,)).fetchone()
+    row = conn.execute(Q.from_(Table("hospitalityclaw_room")).select(Field("id")).where(Field("id") == P()).get_sql(), (room_id,)).fetchone()
     if not row:
         err(f"Room {room_id} not found")
 
@@ -66,11 +67,13 @@ def add_housekeeping_task(conn, args):
 
     task_id = str(uuid.uuid4())
     now = _now_iso()
-    conn.execute("""
-        INSERT INTO hospitalityclaw_housekeeping_task (id, room_id, task_type, assigned_to,
-            scheduled_date, task_status, started_at, completed_at, notes, company_id, created_at)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?)
-    """, (
+    sql, _ = insert_row("hospitalityclaw_housekeeping_task", {
+
+        "id": P(), "room_id": P(), "task_type": P(), "assigned_to": P(), "scheduled_date": P(), "task_status": P(), "started_at": P(), "completed_at": P(), "notes": P(), "company_id": P(), "created_at": P(),
+
+    })
+
+    conn.execute(sql, (
         task_id, room_id, tt,
         getattr(args, "assigned_to", None),
         sd, "pending", None, None,
@@ -86,26 +89,53 @@ def add_housekeeping_task(conn, args):
 # 2. list-housekeeping-tasks
 # ---------------------------------------------------------------------------
 def list_housekeeping_tasks(conn, args):
-    where, params = ["1=1"], []
+    t = Table("hospitalityclaw_housekeeping_task")
+
+    q_count = Q.from_(t).select(fn.Count("*"))
+
+    q_rows = Q.from_(t).select(t.star)
+
+    params = []
+
+
     if getattr(args, "company_id", None):
-        where.append("company_id = ?")
+
+        q_count = q_count.where(t.company_id == P())
+
+        q_rows = q_rows.where(t.company_id == P())
+
         params.append(args.company_id)
+
     if getattr(args, "room_id", None):
-        where.append("room_id = ?")
+
+        q_count = q_count.where(t.room_id == P())
+
+        q_rows = q_rows.where(t.room_id == P())
+
         params.append(args.room_id)
+
     if getattr(args, "task_status", None):
-        where.append("task_status = ?")
+
+        q_count = q_count.where(t.task_status == P())
+
+        q_rows = q_rows.where(t.task_status == P())
+
         params.append(args.task_status)
+
     if getattr(args, "scheduled_date", None):
-        where.append("scheduled_date = ?")
+
+        q_count = q_count.where(t.scheduled_date == P())
+
+        q_rows = q_rows.where(t.scheduled_date == P())
+
         params.append(args.scheduled_date)
 
-    where_sql = " AND ".join(where)
-    total = conn.execute(f"SELECT COUNT(*) FROM hospitalityclaw_housekeeping_task WHERE {where_sql}", params).fetchone()[0]
-    params.extend([args.limit, args.offset])
-    rows = conn.execute(
-        f"SELECT * FROM hospitalityclaw_housekeeping_task WHERE {where_sql} ORDER BY scheduled_date ASC LIMIT ? OFFSET ?", params
-    ).fetchall()
+
+    total = conn.execute(q_count.get_sql(), params).fetchone()[0]
+
+    q_rows = q_rows.orderby(t.scheduled_date, order=Order.asc).limit(P()).offset(P())
+
+    rows = conn.execute(q_rows.get_sql(), params + [args.limit, args.offset]).fetchall()
     ok({"rows": [row_to_dict(r) for r in rows], "total_count": total,
         "limit": args.limit, "offset": args.offset, "has_more": (args.offset + args.limit) < total})
 
@@ -117,7 +147,7 @@ def start_housekeeping_task(conn, args):
     task_id = getattr(args, "task_id", None)
     if not task_id:
         err("--task-id is required")
-    row = conn.execute("SELECT task_status FROM hospitalityclaw_housekeeping_task WHERE id = ?", (task_id,)).fetchone()
+    row = conn.execute(Q.from_(Table("hospitalityclaw_housekeeping_task")).select(Field("task_status")).where(Field("id") == P()).get_sql(), (task_id,)).fetchone()
     if not row:
         err(f"Housekeeping task {task_id} not found")
     if row[0] != "pending":
@@ -140,7 +170,7 @@ def complete_housekeeping_task(conn, args):
     task_id = getattr(args, "task_id", None)
     if not task_id:
         err("--task-id is required")
-    row = conn.execute("SELECT task_status, room_id FROM hospitalityclaw_housekeeping_task WHERE id = ?", (task_id,)).fetchone()
+    row = conn.execute(Q.from_(Table("hospitalityclaw_housekeeping_task")).select(Field("task_status"), Field("room_id")).where(Field("id") == P()).get_sql(), (task_id,)).fetchone()
     if not row:
         err(f"Housekeeping task {task_id} not found")
     if row[0] == "completed":
@@ -159,7 +189,7 @@ def complete_housekeeping_task(conn, args):
 
     # If room was in cleaning status, mark available
     room_id = row[1]
-    room_row = conn.execute("SELECT room_status FROM hospitalityclaw_room WHERE id = ?", (room_id,)).fetchone()
+    room_row = conn.execute(Q.from_(Table("hospitalityclaw_room")).select(Field("room_status")).where(Field("id") == P()).get_sql(), (room_id,)).fetchone()
     if room_row and room_row[0] == "cleaning":
         conn.execute(
             "UPDATE hospitalityclaw_room SET room_status = 'available', updated_at = ? WHERE id = ?",
@@ -195,11 +225,13 @@ def add_inspection(conn, args):
 
     insp_id = str(uuid.uuid4())
     now = _now_iso()
-    conn.execute("""
-        INSERT INTO hospitalityclaw_inspection (id, room_id, inspector, inspection_date,
-            score, passed, notes, company_id, created_at)
-        VALUES (?,?,?,?,?,?,?,?,?)
-    """, (
+    sql, _ = insert_row("hospitalityclaw_inspection", {
+
+        "id": P(), "room_id": P(), "inspector": P(), "inspection_date": P(), "score": P(), "passed": P(), "notes": P(), "company_id": P(), "created_at": P(),
+
+    })
+
+    conn.execute(sql, (
         insp_id, room_id, inspector, insp_date, score_int, passed,
         getattr(args, "notes", None), company_id, now,
     ))
@@ -212,20 +244,37 @@ def add_inspection(conn, args):
 # 6. list-inspections
 # ---------------------------------------------------------------------------
 def list_inspections(conn, args):
-    where, params = ["1=1"], []
+    t = Table("hospitalityclaw_inspection")
+
+    q_count = Q.from_(t).select(fn.Count("*"))
+
+    q_rows = Q.from_(t).select(t.star)
+
+    params = []
+
+
     if getattr(args, "company_id", None):
-        where.append("company_id = ?")
+
+        q_count = q_count.where(t.company_id == P())
+
+        q_rows = q_rows.where(t.company_id == P())
+
         params.append(args.company_id)
+
     if getattr(args, "room_id", None):
-        where.append("room_id = ?")
+
+        q_count = q_count.where(t.room_id == P())
+
+        q_rows = q_rows.where(t.room_id == P())
+
         params.append(args.room_id)
 
-    where_sql = " AND ".join(where)
-    total = conn.execute(f"SELECT COUNT(*) FROM hospitalityclaw_inspection WHERE {where_sql}", params).fetchone()[0]
-    params.extend([args.limit, args.offset])
-    rows = conn.execute(
-        f"SELECT * FROM hospitalityclaw_inspection WHERE {where_sql} ORDER BY inspection_date DESC LIMIT ? OFFSET ?", params
-    ).fetchall()
+
+    total = conn.execute(q_count.get_sql(), params).fetchone()[0]
+
+    q_rows = q_rows.orderby(t.inspection_date, order=Order.desc).limit(P()).offset(P())
+
+    rows = conn.execute(q_rows.get_sql(), params + [args.limit, args.offset]).fetchall()
     ok({"rows": [row_to_dict(r) for r in rows], "total_count": total,
         "limit": args.limit, "offset": args.offset, "has_more": (args.offset + args.limit) < total})
 
@@ -239,10 +288,7 @@ def housekeeping_dashboard(conn, args):
 
     sd = getattr(args, "scheduled_date", None) or datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
-    total = conn.execute(
-        "SELECT COUNT(*) FROM hospitalityclaw_housekeeping_task WHERE company_id = ? AND scheduled_date = ?",
-        (company_id, sd)
-    ).fetchone()[0]
+    total = conn.execute(Q.from_(Table("hospitalityclaw_housekeeping_task")).select(fn.Count("*")).where(Field("company_id") == P()).where(Field("scheduled_date") == P()).get_sql(), (company_id, sd)).fetchone()[0]
 
     status_counts = conn.execute(
         "SELECT task_status, COUNT(*) FROM hospitalityclaw_housekeeping_task "

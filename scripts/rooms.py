@@ -17,6 +17,7 @@ try:
     from erpclaw_lib.naming import get_next_name, ENTITY_PREFIXES
     from erpclaw_lib.response import ok, err, row_to_dict
     from erpclaw_lib.audit import audit
+    from erpclaw_lib.query import Q, P, Table, Field, fn, Order, insert_row
 
     ENTITY_PREFIXES.setdefault("hospitalityclaw_room_type", "RMT-")
     ENTITY_PREFIXES.setdefault("hospitalityclaw_room", "RM-")
@@ -28,28 +29,34 @@ _now_iso = lambda: datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 VALID_ROOM_STATUSES = ("available", "occupied", "maintenance", "out_of_order", "cleaning")
 VALID_AMENITY_TYPES = ("room", "property", "service")
 
+_t_company = Table("company")
+_t_room_type = Table("hospitalityclaw_room_type")
+_t_room = Table("hospitalityclaw_room")
+_t_amenity = Table("hospitalityclaw_amenity")
+_t_room_amenity = Table("hospitalityclaw_room_amenity")
+
 
 def _validate_company(conn, company_id):
     if not company_id:
         err("--company-id is required")
-    row = conn.execute("SELECT id FROM company WHERE id = ?", (company_id,)).fetchone()
-    if not row:
+    q = Q.from_(_t_company).select(_t_company.id).where(_t_company.id == P())
+    if not conn.execute(q.get_sql(), (company_id,)).fetchone():
         err(f"Company {company_id} not found")
 
 
 def _validate_room_type(conn, room_type_id):
     if not room_type_id:
         err("--room-type-id is required")
-    row = conn.execute("SELECT id FROM hospitalityclaw_room_type WHERE id = ?", (room_type_id,)).fetchone()
-    if not row:
+    q = Q.from_(_t_room_type).select(_t_room_type.id).where(_t_room_type.id == P())
+    if not conn.execute(q.get_sql(), (room_type_id,)).fetchone():
         err(f"Room type {room_type_id} not found")
 
 
 def _validate_room(conn, room_id):
     if not room_id:
         err("--room-id is required")
-    row = conn.execute("SELECT id FROM hospitalityclaw_room WHERE id = ?", (room_id,)).fetchone()
-    if not row:
+    q = Q.from_(_t_room).select(_t_room.id).where(_t_room.id == P())
+    if not conn.execute(q.get_sql(), (room_id,)).fetchone():
         err(f"Room {room_id} not found")
 
 
@@ -77,11 +84,12 @@ def add_room_type(conn, args):
     naming = get_next_name(conn, "hospitalityclaw_room_type", company_id=args.company_id)
     now = _now_iso()
 
-    conn.execute("""
-        INSERT INTO hospitalityclaw_room_type (id, naming_series, name, base_rate, max_occupancy,
-            description, company_id, created_at, updated_at)
-        VALUES (?,?,?,?,?,?,?,?,?)
-    """, (
+    sql, _ = insert_row("hospitalityclaw_room_type", {
+        "id": P(), "naming_series": P(), "name": P(), "base_rate": P(),
+        "max_occupancy": P(), "description": P(), "company_id": P(),
+        "created_at": P(), "updated_at": P(),
+    })
+    conn.execute(sql, (
         rt_id, naming, name,
         str(round_currency(to_decimal(base_rate))),
         int(max_occ),
@@ -100,8 +108,8 @@ def update_room_type(conn, args):
     rt_id = getattr(args, "room_type_id", None)
     if not rt_id:
         err("--room-type-id is required")
-    row = conn.execute("SELECT id FROM hospitalityclaw_room_type WHERE id = ?", (rt_id,)).fetchone()
-    if not row:
+    q = Q.from_(_t_room_type).select(_t_room_type.id).where(_t_room_type.id == P())
+    if not conn.execute(q.get_sql(), (rt_id,)).fetchone():
         err(f"Room type {rt_id} not found")
 
     updates, params, changed = [], [], []
@@ -139,17 +147,19 @@ def update_room_type(conn, args):
 # 3. list-room-types
 # ---------------------------------------------------------------------------
 def list_room_types(conn, args):
-    where, params = ["1=1"], []
+    t = _t_room_type
+    q_count = Q.from_(t).select(fn.Count("*"))
+    q_rows = Q.from_(t).select(t.star)
+    params = []
+
     if getattr(args, "company_id", None):
-        where.append("company_id = ?")
+        q_count = q_count.where(t.company_id == P())
+        q_rows = q_rows.where(t.company_id == P())
         params.append(args.company_id)
 
-    where_sql = " AND ".join(where)
-    total = conn.execute(f"SELECT COUNT(*) FROM hospitalityclaw_room_type WHERE {where_sql}", params).fetchone()[0]
-    params.extend([args.limit, args.offset])
-    rows = conn.execute(
-        f"SELECT * FROM hospitalityclaw_room_type WHERE {where_sql} ORDER BY name ASC LIMIT ? OFFSET ?", params
-    ).fetchall()
+    total = conn.execute(q_count.get_sql(), params).fetchone()[0]
+    q_rows = q_rows.orderby(t.name, order=Order.asc).limit(P()).offset(P())
+    rows = conn.execute(q_rows.get_sql(), params + [args.limit, args.offset]).fetchall()
     ok({"rows": [row_to_dict(r) for r in rows], "total_count": total,
         "limit": args.limit, "offset": args.offset, "has_more": (args.offset + args.limit) < total})
 
@@ -166,22 +176,22 @@ def add_room(conn, args):
     _validate_room_type(conn, room_type_id)
 
     # Check unique room number per company
-    dup = conn.execute(
-        "SELECT id FROM hospitalityclaw_room WHERE room_number = ? AND company_id = ?",
-        (room_number, args.company_id)
-    ).fetchone()
-    if dup:
+    q = Q.from_(_t_room).select(_t_room.id).where(
+        (_t_room.room_number == P()) & (_t_room.company_id == P())
+    )
+    if conn.execute(q.get_sql(), (room_number, args.company_id)).fetchone():
         err(f"Room number {room_number} already exists for this company")
 
     rm_id = str(uuid.uuid4())
     naming = get_next_name(conn, "hospitalityclaw_room", company_id=args.company_id)
     now = _now_iso()
 
-    conn.execute("""
-        INSERT INTO hospitalityclaw_room (id, naming_series, room_number, room_type_id, floor,
-            room_status, is_smoking, notes, company_id, created_at, updated_at)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?)
-    """, (
+    sql, _ = insert_row("hospitalityclaw_room", {
+        "id": P(), "naming_series": P(), "room_number": P(), "room_type_id": P(),
+        "floor": P(), "room_status": P(), "is_smoking": P(), "notes": P(),
+        "company_id": P(), "created_at": P(), "updated_at": P(),
+    })
+    conn.execute(sql, (
         rm_id, naming, room_number, room_type_id,
         int(getattr(args, "floor", None) or 1),
         "available",
@@ -247,20 +257,23 @@ def update_room(conn, args):
 def get_room(conn, args):
     room_id = getattr(args, "room_id", None)
     _validate_room(conn, room_id)
-    row = conn.execute("SELECT * FROM hospitalityclaw_room WHERE id = ?", (room_id,)).fetchone()
+    q = Q.from_(_t_room).select(_t_room.star).where(_t_room.id == P())
+    row = conn.execute(q.get_sql(), (room_id,)).fetchone()
     data = row_to_dict(row)
 
     # Enrich with room type name
-    rt_row = conn.execute("SELECT name FROM hospitalityclaw_room_type WHERE id = ?", (data["room_type_id"],)).fetchone()
+    q = Q.from_(_t_room_type).select(_t_room_type.name).where(_t_room_type.id == P())
+    rt_row = conn.execute(q.get_sql(), (data["room_type_id"],)).fetchone()
     data["room_type_name"] = rt_row[0] if rt_row else None
 
     # Amenities
-    amenities = conn.execute(
-        "SELECT a.name, a.amenity_type FROM hospitalityclaw_room_amenity ra "
-        "JOIN hospitalityclaw_amenity a ON ra.amenity_id = a.id WHERE ra.room_id = ?",
-        (room_id,)
-    ).fetchall()
-    data["amenities"] = [{"name": a[0], "amenity_type": a[1]} for a in amenities]
+    ra = _t_room_amenity
+    a = _t_amenity
+    q = (Q.from_(ra).join(a).on(ra.amenity_id == a.id)
+         .select(a.name, a.amenity_type)
+         .where(ra.room_id == P()))
+    amenities = conn.execute(q.get_sql(), (room_id,)).fetchall()
+    data["amenities"] = [{"name": r[0], "amenity_type": r[1]} for r in amenities]
     ok(data)
 
 
@@ -268,26 +281,31 @@ def get_room(conn, args):
 # 7. list-rooms
 # ---------------------------------------------------------------------------
 def list_rooms(conn, args):
-    where, params = ["1=1"], []
+    t = _t_room
+    q_count = Q.from_(t).select(fn.Count("*"))
+    q_rows = Q.from_(t).select(t.star)
+    params = []
+
     if getattr(args, "company_id", None):
-        where.append("company_id = ?")
+        q_count = q_count.where(t.company_id == P())
+        q_rows = q_rows.where(t.company_id == P())
         params.append(args.company_id)
     if getattr(args, "room_type_id", None):
-        where.append("room_type_id = ?")
+        q_count = q_count.where(t.room_type_id == P())
+        q_rows = q_rows.where(t.room_type_id == P())
         params.append(args.room_type_id)
     if getattr(args, "room_status", None):
-        where.append("room_status = ?")
+        q_count = q_count.where(t.room_status == P())
+        q_rows = q_rows.where(t.room_status == P())
         params.append(args.room_status)
     if getattr(args, "floor", None):
-        where.append("floor = ?")
+        q_count = q_count.where(t.floor == P())
+        q_rows = q_rows.where(t.floor == P())
         params.append(int(args.floor))
 
-    where_sql = " AND ".join(where)
-    total = conn.execute(f"SELECT COUNT(*) FROM hospitalityclaw_room WHERE {where_sql}", params).fetchone()[0]
-    params.extend([args.limit, args.offset])
-    rows = conn.execute(
-        f"SELECT * FROM hospitalityclaw_room WHERE {where_sql} ORDER BY room_number ASC LIMIT ? OFFSET ?", params
-    ).fetchall()
+    total = conn.execute(q_count.get_sql(), params).fetchone()[0]
+    q_rows = q_rows.orderby(t.room_number, order=Order.asc).limit(P()).offset(P())
+    rows = conn.execute(q_rows.get_sql(), params + [args.limit, args.offset]).fetchall()
     ok({"rows": [row_to_dict(r) for r in rows], "total_count": total,
         "limit": args.limit, "offset": args.offset, "has_more": (args.offset + args.limit) < total})
 
@@ -325,10 +343,11 @@ def add_amenity(conn, args):
 
     am_id = str(uuid.uuid4())
     now = _now_iso()
-    conn.execute("""
-        INSERT INTO hospitalityclaw_amenity (id, name, amenity_type, description, company_id, created_at)
-        VALUES (?,?,?,?,?,?)
-    """, (am_id, name, at, getattr(args, "description", None), args.company_id, now))
+    sql, _ = insert_row("hospitalityclaw_amenity", {
+        "id": P(), "name": P(), "amenity_type": P(), "description": P(),
+        "company_id": P(), "created_at": P(),
+    })
+    conn.execute(sql, (am_id, name, at, getattr(args, "description", None), args.company_id, now))
     audit(conn, "hospitalityclaw_amenity", am_id, "hospitality-add-amenity", args.company_id)
     conn.commit()
     ok({"id": am_id, "name": name, "amenity_type": at})
@@ -338,20 +357,23 @@ def add_amenity(conn, args):
 # 10. list-amenities
 # ---------------------------------------------------------------------------
 def list_amenities(conn, args):
-    where, params = ["1=1"], []
+    t = _t_amenity
+    q_count = Q.from_(t).select(fn.Count("*"))
+    q_rows = Q.from_(t).select(t.star)
+    params = []
+
     if getattr(args, "company_id", None):
-        where.append("company_id = ?")
+        q_count = q_count.where(t.company_id == P())
+        q_rows = q_rows.where(t.company_id == P())
         params.append(args.company_id)
     if getattr(args, "amenity_type", None):
-        where.append("amenity_type = ?")
+        q_count = q_count.where(t.amenity_type == P())
+        q_rows = q_rows.where(t.amenity_type == P())
         params.append(args.amenity_type)
 
-    where_sql = " AND ".join(where)
-    total = conn.execute(f"SELECT COUNT(*) FROM hospitalityclaw_amenity WHERE {where_sql}", params).fetchone()[0]
-    params.extend([args.limit, args.offset])
-    rows = conn.execute(
-        f"SELECT * FROM hospitalityclaw_amenity WHERE {where_sql} ORDER BY name ASC LIMIT ? OFFSET ?", params
-    ).fetchall()
+    total = conn.execute(q_count.get_sql(), params).fetchone()[0]
+    q_rows = q_rows.orderby(t.name, order=Order.asc).limit(P()).offset(P())
+    rows = conn.execute(q_rows.get_sql(), params + [args.limit, args.offset]).fetchall()
     ok({"rows": [row_to_dict(r) for r in rows], "total_count": total,
         "limit": args.limit, "offset": args.offset, "has_more": (args.offset + args.limit) < total})
 
@@ -365,24 +387,23 @@ def assign_amenity(conn, args):
     amenity_id = getattr(args, "amenity_id", None)
     if not amenity_id:
         err("--amenity-id is required")
-    row = conn.execute("SELECT id FROM hospitalityclaw_amenity WHERE id = ?", (amenity_id,)).fetchone()
-    if not row:
+    q = Q.from_(_t_amenity).select(_t_amenity.id).where(_t_amenity.id == P())
+    if not conn.execute(q.get_sql(), (amenity_id,)).fetchone():
         err(f"Amenity {amenity_id} not found")
     _validate_company(conn, args.company_id)
 
     # Check duplicate
-    dup = conn.execute(
-        "SELECT id FROM hospitalityclaw_room_amenity WHERE room_id = ? AND amenity_id = ?",
-        (room_id, amenity_id)
-    ).fetchone()
-    if dup:
+    q = Q.from_(_t_room_amenity).select(_t_room_amenity.id).where(
+        (_t_room_amenity.room_id == P()) & (_t_room_amenity.amenity_id == P())
+    )
+    if conn.execute(q.get_sql(), (room_id, amenity_id)).fetchone():
         err("This amenity is already assigned to this room")
 
     ra_id = str(uuid.uuid4())
-    conn.execute(
-        "INSERT INTO hospitalityclaw_room_amenity (id, room_id, amenity_id, company_id) VALUES (?,?,?,?)",
-        (ra_id, room_id, amenity_id, args.company_id)
-    )
+    sql, _ = insert_row("hospitalityclaw_room_amenity", {
+        "id": P(), "room_id": P(), "amenity_id": P(), "company_id": P(),
+    })
+    conn.execute(sql, (ra_id, room_id, amenity_id, args.company_id))
     audit(conn, "hospitalityclaw_room_amenity", ra_id, "hospitality-assign-amenity", args.company_id)
     conn.commit()
     ok({"id": ra_id, "room_id": room_id, "amenity_id": amenity_id})
@@ -394,14 +415,13 @@ def assign_amenity(conn, args):
 def room_availability_report(conn, args):
     _validate_company(conn, args.company_id)
 
-    total_rooms = conn.execute(
-        "SELECT COUNT(*) FROM hospitalityclaw_room WHERE company_id = ?", (args.company_id,)
-    ).fetchone()[0]
+    t = _t_room
+    q = Q.from_(t).select(fn.Count("*")).where(t.company_id == P())
+    total_rooms = conn.execute(q.get_sql(), (args.company_id,)).fetchone()[0]
 
-    status_counts = conn.execute(
-        "SELECT room_status, COUNT(*) FROM hospitalityclaw_room WHERE company_id = ? GROUP BY room_status",
-        (args.company_id,)
-    ).fetchall()
+    q = (Q.from_(t).select(t.room_status, fn.Count("*"))
+         .where(t.company_id == P()).groupby(t.room_status))
+    status_counts = conn.execute(q.get_sql(), (args.company_id,)).fetchall()
     breakdown = {r[0]: r[1] for r in status_counts}
 
     ok({

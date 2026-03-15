@@ -17,6 +17,7 @@ try:
     from erpclaw_lib.naming import get_next_name, ENTITY_PREFIXES
     from erpclaw_lib.response import ok, err, row_to_dict
     from erpclaw_lib.audit import audit
+    from erpclaw_lib.query import Q, P, Table, Field, fn, Order, insert_row
 
     ENTITY_PREFIXES.setdefault("hospitalityclaw_room_service_order", "RSO-")
 except ImportError:
@@ -31,7 +32,7 @@ VALID_ORDER_STATUSES = ("pending", "preparing", "delivered", "cancelled")
 def _validate_company(conn, company_id):
     if not company_id:
         err("--company-id is required")
-    row = conn.execute("SELECT id FROM company WHERE id = ?", (company_id,)).fetchone()
+    row = conn.execute(Q.from_(Table("company")).select(Field("id")).where(Field("id") == P()).get_sql(), (company_id,)).fetchone()
     if not row:
         err(f"Company {company_id} not found")
 
@@ -39,7 +40,7 @@ def _validate_company(conn, company_id):
 def _validate_reservation(conn, res_id):
     if not res_id:
         err("--reservation-id is required")
-    row = conn.execute("SELECT id FROM hospitalityclaw_reservation WHERE id = ?", (res_id,)).fetchone()
+    row = conn.execute(Q.from_(Table("hospitalityclaw_reservation")).select(Field("id")).where(Field("id") == P()).get_sql(), (res_id,)).fetchone()
     if not row:
         err(f"Reservation {res_id} not found")
 
@@ -64,10 +65,13 @@ def add_outlet(conn, args):
 
     out_id = str(uuid.uuid4())
     now = _now_iso()
-    conn.execute("""
-        INSERT INTO hospitalityclaw_outlet (id, name, outlet_type, operating_hours, company_id, created_at)
-        VALUES (?,?,?,?,?,?)
-    """, (out_id, name, ot, getattr(args, "operating_hours", None), args.company_id, now))
+    sql, _ = insert_row("hospitalityclaw_outlet", {
+
+        "id": P(), "name": P(), "outlet_type": P(), "operating_hours": P(), "company_id": P(), "created_at": P(),
+
+    })
+
+    conn.execute(sql, (out_id, name, ot, getattr(args, "operating_hours", None), args.company_id, now))
     audit(conn, "hospitalityclaw_outlet", out_id, "hospitality-add-outlet", args.company_id)
     conn.commit()
     ok({"id": out_id, "name": name, "outlet_type": ot})
@@ -77,20 +81,37 @@ def add_outlet(conn, args):
 # 2. list-outlets
 # ---------------------------------------------------------------------------
 def list_outlets(conn, args):
-    where, params = ["1=1"], []
+    t = Table("hospitalityclaw_outlet")
+
+    q_count = Q.from_(t).select(fn.Count("*"))
+
+    q_rows = Q.from_(t).select(t.star)
+
+    params = []
+
+
     if getattr(args, "company_id", None):
-        where.append("company_id = ?")
+
+        q_count = q_count.where(t.company_id == P())
+
+        q_rows = q_rows.where(t.company_id == P())
+
         params.append(args.company_id)
+
     if getattr(args, "outlet_type", None):
-        where.append("outlet_type = ?")
+
+        q_count = q_count.where(t.outlet_type == P())
+
+        q_rows = q_rows.where(t.outlet_type == P())
+
         params.append(args.outlet_type)
 
-    where_sql = " AND ".join(where)
-    total = conn.execute(f"SELECT COUNT(*) FROM hospitalityclaw_outlet WHERE {where_sql}", params).fetchone()[0]
-    params.extend([args.limit, args.offset])
-    rows = conn.execute(
-        f"SELECT * FROM hospitalityclaw_outlet WHERE {where_sql} ORDER BY name ASC LIMIT ? OFFSET ?", params
-    ).fetchall()
+
+    total = conn.execute(q_count.get_sql(), params).fetchone()[0]
+
+    q_rows = q_rows.orderby(t.name, order=Order.asc).limit(P()).offset(P())
+
+    rows = conn.execute(q_rows.get_sql(), params + [args.limit, args.offset]).fetchall()
     ok({"rows": [row_to_dict(r) for r in rows], "total_count": total,
         "limit": args.limit, "offset": args.offset, "has_more": (args.offset + args.limit) < total})
 
@@ -107,7 +128,7 @@ def add_room_service_order(conn, args):
     outlet_id = getattr(args, "outlet_id", None)
     if not outlet_id:
         err("--outlet-id is required")
-    out_row = conn.execute("SELECT id FROM hospitalityclaw_outlet WHERE id = ?", (outlet_id,)).fetchone()
+    out_row = conn.execute(Q.from_(Table("hospitalityclaw_outlet")).select(Field("id")).where(Field("id") == P()).get_sql(), (outlet_id,)).fetchone()
     if not out_row:
         err(f"Outlet {outlet_id} not found")
 
@@ -128,11 +149,16 @@ def add_room_service_order(conn, args):
     naming = get_next_name(conn, "hospitalityclaw_room_service_order", company_id=company_id)
     now = _now_iso()
 
-    conn.execute("""
-        INSERT INTO hospitalityclaw_room_service_order (id, naming_series, reservation_id, outlet_id,
-            order_time, items_json, total_amount, order_status, company_id, created_at)
-        VALUES (?,?,?,?,?,?,?,?,?,?)
-    """, (
+    sql, _ = insert_row("hospitalityclaw_room_service_order", {
+
+
+        "id": P(), "naming_series": P(), "reservation_id": P(), "outlet_id": P(), "order_time": P(), "items_json": P(), "total_amount": P(), "order_status": P(), "company_id": P(), "created_at": P(),
+
+
+    })
+
+
+    conn.execute(sql, (
         order_id, naming, res_id, outlet_id,
         now, items_json,
         str(round_currency(to_decimal(total_amount))),
@@ -148,26 +174,53 @@ def add_room_service_order(conn, args):
 # 4. list-room-service-orders
 # ---------------------------------------------------------------------------
 def list_room_service_orders(conn, args):
-    where, params = ["1=1"], []
+    t = Table("hospitalityclaw_room_service_order")
+
+    q_count = Q.from_(t).select(fn.Count("*"))
+
+    q_rows = Q.from_(t).select(t.star)
+
+    params = []
+
+
     if getattr(args, "reservation_id", None):
-        where.append("reservation_id = ?")
+
+        q_count = q_count.where(t.reservation_id == P())
+
+        q_rows = q_rows.where(t.reservation_id == P())
+
         params.append(args.reservation_id)
+
     if getattr(args, "outlet_id", None):
-        where.append("outlet_id = ?")
+
+        q_count = q_count.where(t.outlet_id == P())
+
+        q_rows = q_rows.where(t.outlet_id == P())
+
         params.append(args.outlet_id)
+
     if getattr(args, "order_status", None):
-        where.append("order_status = ?")
+
+        q_count = q_count.where(t.order_status == P())
+
+        q_rows = q_rows.where(t.order_status == P())
+
         params.append(args.order_status)
+
     if getattr(args, "company_id", None):
-        where.append("company_id = ?")
+
+        q_count = q_count.where(t.company_id == P())
+
+        q_rows = q_rows.where(t.company_id == P())
+
         params.append(args.company_id)
 
-    where_sql = " AND ".join(where)
-    total = conn.execute(f"SELECT COUNT(*) FROM hospitalityclaw_room_service_order WHERE {where_sql}", params).fetchone()[0]
-    params.extend([args.limit, args.offset])
-    rows = conn.execute(
-        f"SELECT * FROM hospitalityclaw_room_service_order WHERE {where_sql} ORDER BY created_at DESC LIMIT ? OFFSET ?", params
-    ).fetchall()
+
+    total = conn.execute(q_count.get_sql(), params).fetchone()[0]
+
+    q_rows = q_rows.orderby(t.created_at, order=Order.desc).limit(P()).offset(P())
+
+    rows = conn.execute(q_rows.get_sql(), params + [args.limit, args.offset]).fetchall()
     ok({"rows": [row_to_dict(r) for r in rows], "total_count": total,
         "limit": args.limit, "offset": args.offset, "has_more": (args.offset + args.limit) < total})
 
@@ -179,7 +232,7 @@ def complete_room_service_order(conn, args):
     order_id = getattr(args, "order_id", None)
     if not order_id:
         err("--order-id is required")
-    row = conn.execute("SELECT order_status FROM hospitalityclaw_room_service_order WHERE id = ?", (order_id,)).fetchone()
+    row = conn.execute(Q.from_(Table("hospitalityclaw_room_service_order")).select(Field("order_status")).where(Field("id") == P()).get_sql(), (order_id,)).fetchone()
     if not row:
         err(f"Room service order {order_id} not found")
     if row[0] == "delivered":
@@ -224,11 +277,13 @@ def add_minibar_consumption(conn, args):
 
     mb_id = str(uuid.uuid4())
     now = _now_iso()
-    conn.execute("""
-        INSERT INTO hospitalityclaw_minibar_consumption (id, reservation_id, item_name, quantity,
-            unit_price, total, consumption_date, company_id, created_at)
-        VALUES (?,?,?,?,?,?,?,?,?)
-    """, (
+    sql, _ = insert_row("hospitalityclaw_minibar_consumption", {
+
+        "id": P(), "reservation_id": P(), "item_name": P(), "quantity": P(), "unit_price": P(), "total": P(), "consumption_date": P(), "company_id": P(), "created_at": P(),
+
+    })
+
+    conn.execute(sql, (
         mb_id, res_id, item_name, qty,
         str(up), str(total), consumption_date,
         company_id, now,
@@ -242,20 +297,37 @@ def add_minibar_consumption(conn, args):
 # 7. list-minibar-consumptions
 # ---------------------------------------------------------------------------
 def list_minibar_consumptions(conn, args):
-    where, params = ["1=1"], []
+    t = Table("hospitalityclaw_minibar_consumption")
+
+    q_count = Q.from_(t).select(fn.Count("*"))
+
+    q_rows = Q.from_(t).select(t.star)
+
+    params = []
+
+
     if getattr(args, "reservation_id", None):
-        where.append("reservation_id = ?")
+
+        q_count = q_count.where(t.reservation_id == P())
+
+        q_rows = q_rows.where(t.reservation_id == P())
+
         params.append(args.reservation_id)
+
     if getattr(args, "company_id", None):
-        where.append("company_id = ?")
+
+        q_count = q_count.where(t.company_id == P())
+
+        q_rows = q_rows.where(t.company_id == P())
+
         params.append(args.company_id)
 
-    where_sql = " AND ".join(where)
-    total = conn.execute(f"SELECT COUNT(*) FROM hospitalityclaw_minibar_consumption WHERE {where_sql}", params).fetchone()[0]
-    params.extend([args.limit, args.offset])
-    rows = conn.execute(
-        f"SELECT * FROM hospitalityclaw_minibar_consumption WHERE {where_sql} ORDER BY consumption_date DESC LIMIT ? OFFSET ?", params
-    ).fetchall()
+
+    total = conn.execute(q_count.get_sql(), params).fetchone()[0]
+
+    q_rows = q_rows.orderby(t.consumption_date, order=Order.desc).limit(P()).offset(P())
+
+    rows = conn.execute(q_rows.get_sql(), params + [args.limit, args.offset]).fetchall()
     ok({"rows": [row_to_dict(r) for r in rows], "total_count": total,
         "limit": args.limit, "offset": args.offset, "has_more": (args.offset + args.limit) < total})
 

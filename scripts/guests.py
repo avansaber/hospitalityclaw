@@ -21,6 +21,7 @@ try:
     from erpclaw_lib.response import ok, err, row_to_dict
     from erpclaw_lib.audit import audit
     from erpclaw_lib.cross_skill import create_customer, CrossSkillError
+    from erpclaw_lib.query import Q, P, Table, Field, fn, Order, insert_row
 
     ENTITY_PREFIXES.setdefault("hospitalityclaw_guest_ext", "HGST-")
 except ImportError:
@@ -35,7 +36,7 @@ VALID_PREFERENCE_TYPES = ("room", "pillow", "floor", "diet", "newspaper", "other
 def _validate_company(conn, company_id):
     if not company_id:
         err("--company-id is required")
-    row = conn.execute("SELECT id FROM company WHERE id = ?", (company_id,)).fetchone()
+    row = conn.execute(Q.from_(Table("company")).select(Field("id")).where(Field("id") == P()).get_sql(), (company_id,)).fetchone()
     if not row:
         err(f"Company {company_id} not found")
 
@@ -43,7 +44,7 @@ def _validate_company(conn, company_id):
 def _validate_guest(conn, guest_id):
     if not guest_id:
         err("--guest-id is required")
-    row = conn.execute("SELECT id FROM hospitalityclaw_guest_ext WHERE id = ?", (guest_id,)).fetchone()
+    row = conn.execute(Q.from_(Table("hospitalityclaw_guest_ext")).select(Field("id")).where(Field("id") == P()).get_sql(), (guest_id,)).fetchone()
     if not row:
         err(f"Guest {guest_id} not found")
 
@@ -89,12 +90,16 @@ def add_guest(conn, args):
     naming = get_next_name(conn, "hospitalityclaw_guest_ext", company_id=args.company_id)
     now = _now_iso()
 
-    conn.execute("""
-        INSERT INTO hospitalityclaw_guest_ext (id, naming_series, customer_id,
-            id_type, id_number, nationality, vip_level, loyalty_points,
-            total_stays, total_spent, is_active, company_id, created_at, updated_at)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-    """, (
+    sql, _ = insert_row("hospitalityclaw_guest_ext", {
+
+
+        "id": P(), "naming_series": P(), "customer_id": P(), "id_type": P(), "id_number": P(), "nationality": P(), "vip_level": P(), "loyalty_points": P(), "total_stays": P(), "total_spent": P(), "is_active": P(), "company_id": P(), "created_at": P(), "updated_at": P(),
+
+
+    })
+
+
+    conn.execute(sql, (
         guest_id, naming, customer_id,
         getattr(args, "id_type", None),
         getattr(args, "id_number", None),
@@ -116,9 +121,7 @@ def update_guest(conn, args):
     _validate_guest(conn, guest_id)
 
     # Fetch the ext row to get customer_id
-    ext_row = conn.execute(
-        "SELECT customer_id FROM hospitalityclaw_guest_ext WHERE id = ?", (guest_id,)
-    ).fetchone()
+    ext_row = conn.execute(Q.from_(Table("hospitalityclaw_guest_ext")).select(Field("customer_id")).where(Field("id") == P()).get_sql(), (guest_id,)).fetchone()
     customer_id = ext_row[0]
 
     # Core customer fields: update directly in customer table
@@ -191,12 +194,8 @@ def get_guest(conn, args):
     data = row_to_dict(row)
 
     # Enrich with preference count and reservation count
-    pref_count = conn.execute(
-        "SELECT COUNT(*) FROM hospitalityclaw_guest_preference WHERE guest_id = ?", (guest_id,)
-    ).fetchone()[0]
-    res_count = conn.execute(
-        "SELECT COUNT(*) FROM hospitalityclaw_reservation WHERE guest_id = ?", (guest_id,)
-    ).fetchone()[0]
+    pref_count = conn.execute(Q.from_(Table("hospitalityclaw_guest_preference")).select(fn.Count("*")).where(Field("guest_id") == P()).get_sql(), (guest_id,)).fetchone()[0]
+    res_count = conn.execute(Q.from_(Table("hospitalityclaw_reservation")).select(fn.Count("*")).where(Field("guest_id") == P()).get_sql(), (guest_id,)).fetchone()[0]
     data["preference_count"] = pref_count
     data["reservation_count"] = res_count
     ok(data)
@@ -255,10 +254,13 @@ def add_guest_preference(conn, args):
 
     pref_id = str(uuid.uuid4())
     now = _now_iso()
-    conn.execute("""
-        INSERT INTO hospitalityclaw_guest_preference (id, guest_id, preference_type, preference_value, company_id, created_at)
-        VALUES (?,?,?,?,?,?)
-    """, (pref_id, guest_id, pt, pv, args.company_id, now))
+    sql, _ = insert_row("hospitalityclaw_guest_preference", {
+
+        "id": P(), "guest_id": P(), "preference_type": P(), "preference_value": P(), "company_id": P(), "created_at": P(),
+
+    })
+
+    conn.execute(sql, (pref_id, guest_id, pt, pv, args.company_id, now))
     audit(conn, "hospitalityclaw_guest_preference", pref_id, "hospitality-add-guest-preference", args.company_id)
     conn.commit()
     ok({"id": pref_id, "guest_id": guest_id, "preference_type": pt, "preference_value": pv})

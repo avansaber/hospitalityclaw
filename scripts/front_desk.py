@@ -16,6 +16,7 @@ try:
     from erpclaw_lib.decimal_utils import to_decimal, round_currency
     from erpclaw_lib.response import ok, err, row_to_dict
     from erpclaw_lib.audit import audit
+    from erpclaw_lib.query import Q, P, Table, Field, fn, Order, insert_row
 except ImportError:
     pass
 
@@ -32,11 +33,18 @@ VALID_REQUEST_TYPES = ("housekeeping", "maintenance", "amenity", "food", "other"
 VALID_PRIORITIES = ("low", "normal", "high", "urgent")
 VALID_CHARGE_TYPES = ("room", "food", "minibar", "phone", "laundry", "parking", "other")
 
+_t_reservation = Table("hospitalityclaw_reservation")
+_t_room = Table("hospitalityclaw_room")
+_t_guest_ext = Table("hospitalityclaw_guest_ext")
+_t_guest_request = Table("hospitalityclaw_guest_request")
+_t_folio = Table("hospitalityclaw_folio_charge")
+
 
 def _validate_reservation(conn, res_id):
     if not res_id:
         err("--reservation-id is required")
-    row = conn.execute("SELECT * FROM hospitalityclaw_reservation WHERE id = ?", (res_id,)).fetchone()
+    q = Q.from_(_t_reservation).select(_t_reservation.star).where(_t_reservation.id == P())
+    row = conn.execute(q.get_sql(), (res_id,)).fetchone()
     if not row:
         err(f"Reservation {res_id} not found")
     return row_to_dict(row)
@@ -45,7 +53,8 @@ def _validate_reservation(conn, res_id):
 def _validate_room(conn, room_id):
     if not room_id:
         err("--room-id is required")
-    row = conn.execute("SELECT * FROM hospitalityclaw_room WHERE id = ?", (room_id,)).fetchone()
+    q = Q.from_(_t_room).select(_t_room.star).where(_t_room.id == P())
+    row = conn.execute(q.get_sql(), (room_id,)).fetchone()
     if not row:
         err(f"Room {room_id} not found")
     return row_to_dict(row)
@@ -109,10 +118,8 @@ def _build_checkout_gl_entries(conn, reservation_id, receivable_account_id,
     Returns list of entry dicts, or empty list if no charges.
     """
     # Fetch all folio charges and aggregate by category using Python Decimal
-    rows = conn.execute(
-        "SELECT charge_type, amount FROM hospitalityclaw_folio_charge WHERE reservation_id = ?",
-        (reservation_id,)
-    ).fetchall()
+    q = Q.from_(_t_folio).select(_t_folio.charge_type, _t_folio.amount).where(_t_folio.reservation_id == P())
+    rows = conn.execute(q.get_sql(), (reservation_id,)).fetchall()
 
     if not rows:
         return []
@@ -204,18 +211,14 @@ def check_out(conn, args):
         )
 
     # Update guest_ext total_spent (use Decimal for accuracy)
-    folio_rows = conn.execute(
-        "SELECT amount FROM hospitalityclaw_folio_charge WHERE reservation_id = ?",
-        (res["id"],)
-    ).fetchall()
+    q = Q.from_(_t_folio).select(_t_folio.amount).where(_t_folio.reservation_id == P())
+    folio_rows = conn.execute(q.get_sql(), (res["id"],)).fetchall()
     folio_total = sum(to_decimal(r[0]) for r in folio_rows) if folio_rows else Decimal("0")
     folio_total = round_currency(folio_total)
 
     # Update guest_ext total_spent using Decimal math (not CAST AS REAL)
-    guest_row = conn.execute(
-        "SELECT total_spent FROM hospitalityclaw_guest_ext WHERE id = ?",
-        (res["guest_id"],)
-    ).fetchone()
+    q = Q.from_(_t_guest_ext).select(_t_guest_ext.total_spent).where(_t_guest_ext.id == P())
+    guest_row = conn.execute(q.get_sql(), (res["guest_id"],)).fetchone()
     prev_spent = to_decimal(guest_row[0]) if guest_row else Decimal("0")
     new_spent = round_currency(prev_spent + folio_total)
     conn.execute(
@@ -233,10 +236,8 @@ def check_out(conn, args):
     if HAS_GL and receivable_account_id and revenue_account_id and folio_total > Decimal("0"):
         try:
             # Look up customer_id from guest_ext
-            guest_ext = conn.execute(
-                "SELECT customer_id FROM hospitalityclaw_guest_ext WHERE id = ?",
-                (res["guest_id"],)
-            ).fetchone()
+            q = Q.from_(_t_guest_ext).select(_t_guest_ext.customer_id).where(_t_guest_ext.id == P())
+            guest_ext = conn.execute(q.get_sql(), (res["guest_id"],)).fetchone()
             customer_id = guest_ext[0] if guest_ext else None
 
             if not customer_id:
@@ -331,11 +332,12 @@ def add_guest_request(conn, args):
 
     req_id = str(uuid.uuid4())
     now = _now_iso()
-    conn.execute("""
-        INSERT INTO hospitalityclaw_guest_request (id, reservation_id, request_type, description,
-            priority, request_status, assigned_to, completed_at, company_id, created_at)
-        VALUES (?,?,?,?,?,?,?,?,?,?)
-    """, (
+    sql, _ = insert_row("hospitalityclaw_guest_request", {
+        "id": P(), "reservation_id": P(), "request_type": P(), "description": P(),
+        "priority": P(), "request_status": P(), "assigned_to": P(),
+        "completed_at": P(), "company_id": P(), "created_at": P(),
+    })
+    conn.execute(sql, (
         req_id, res["id"], rt, desc, priority, "open",
         getattr(args, "assigned_to", None), None,
         company_id, now,
@@ -349,23 +351,27 @@ def add_guest_request(conn, args):
 # 5. list-guest-requests
 # ---------------------------------------------------------------------------
 def list_guest_requests(conn, args):
-    where, params = ["1=1"], []
+    t = _t_guest_request
+    q_count = Q.from_(t).select(fn.Count("*"))
+    q_rows = Q.from_(t).select(t.star)
+    params = []
+
     if getattr(args, "reservation_id", None):
-        where.append("reservation_id = ?")
+        q_count = q_count.where(t.reservation_id == P())
+        q_rows = q_rows.where(t.reservation_id == P())
         params.append(args.reservation_id)
     if getattr(args, "request_status", None):
-        where.append("request_status = ?")
+        q_count = q_count.where(t.request_status == P())
+        q_rows = q_rows.where(t.request_status == P())
         params.append(args.request_status)
     if getattr(args, "company_id", None):
-        where.append("company_id = ?")
+        q_count = q_count.where(t.company_id == P())
+        q_rows = q_rows.where(t.company_id == P())
         params.append(args.company_id)
 
-    where_sql = " AND ".join(where)
-    total = conn.execute(f"SELECT COUNT(*) FROM hospitalityclaw_guest_request WHERE {where_sql}", params).fetchone()[0]
-    params.extend([args.limit, args.offset])
-    rows = conn.execute(
-        f"SELECT * FROM hospitalityclaw_guest_request WHERE {where_sql} ORDER BY created_at DESC LIMIT ? OFFSET ?", params
-    ).fetchall()
+    total = conn.execute(q_count.get_sql(), params).fetchone()[0]
+    q_rows = q_rows.orderby(t.created_at, order=Order.desc).limit(P()).offset(P())
+    rows = conn.execute(q_rows.get_sql(), params + [args.limit, args.offset]).fetchall()
     ok({"rows": [row_to_dict(r) for r in rows], "total_count": total,
         "limit": args.limit, "offset": args.offset, "has_more": (args.offset + args.limit) < total})
 
@@ -377,7 +383,8 @@ def complete_guest_request(conn, args):
     req_id = getattr(args, "request_id", None)
     if not req_id:
         err("--request-id is required")
-    row = conn.execute("SELECT request_status FROM hospitalityclaw_guest_request WHERE id = ?", (req_id,)).fetchone()
+    q = Q.from_(_t_guest_request).select(_t_guest_request.request_status).where(_t_guest_request.id == P())
+    row = conn.execute(q.get_sql(), (req_id,)).fetchone()
     if not row:
         err(f"Guest request {req_id} not found")
     if row[0] == "completed":
@@ -487,11 +494,11 @@ def add_charge(conn, args):
 
     charge_id = str(uuid.uuid4())
     now = _now_iso()
-    conn.execute("""
-        INSERT INTO hospitalityclaw_folio_charge (id, reservation_id, charge_date, charge_type,
-            description, amount, company_id, created_at)
-        VALUES (?,?,?,?,?,?,?,?)
-    """, (
+    sql, _ = insert_row("hospitalityclaw_folio_charge", {
+        "id": P(), "reservation_id": P(), "charge_date": P(), "charge_type": P(),
+        "description": P(), "amount": P(), "company_id": P(), "created_at": P(),
+    })
+    conn.execute(sql, (
         charge_id, res["id"], now[:10], ct, desc,
         str(round_currency(to_decimal(amount))),
         company_id, now,
@@ -505,29 +512,34 @@ def add_charge(conn, args):
 # 10. list-folio-charges
 # ---------------------------------------------------------------------------
 def list_folio_charges(conn, args):
-    where, params = ["1=1"], []
+    t = _t_folio
+    q_count = Q.from_(t).select(fn.Count("*"))
+    q_rows = Q.from_(t).select(t.star)
+    q_total = Q.from_(t).select(fn.Coalesce(fn.Sum(t.amount), 0))
+    params = []
+
     if getattr(args, "reservation_id", None):
-        where.append("reservation_id = ?")
+        q_count = q_count.where(t.reservation_id == P())
+        q_rows = q_rows.where(t.reservation_id == P())
+        q_total = q_total.where(t.reservation_id == P())
         params.append(args.reservation_id)
     if getattr(args, "charge_type", None):
-        where.append("charge_type = ?")
+        q_count = q_count.where(t.charge_type == P())
+        q_rows = q_rows.where(t.charge_type == P())
+        q_total = q_total.where(t.charge_type == P())
         params.append(args.charge_type)
     if getattr(args, "company_id", None):
-        where.append("company_id = ?")
+        q_count = q_count.where(t.company_id == P())
+        q_rows = q_rows.where(t.company_id == P())
+        q_total = q_total.where(t.company_id == P())
         params.append(args.company_id)
 
-    where_sql = " AND ".join(where)
-    total = conn.execute(f"SELECT COUNT(*) FROM hospitalityclaw_folio_charge WHERE {where_sql}", params).fetchone()[0]
-    params.extend([args.limit, args.offset])
-    rows = conn.execute(
-        f"SELECT * FROM hospitalityclaw_folio_charge WHERE {where_sql} ORDER BY created_at DESC LIMIT ? OFFSET ?", params
-    ).fetchall()
+    total = conn.execute(q_count.get_sql(), params).fetchone()[0]
+    q_rows = q_rows.orderby(t.created_at, order=Order.desc).limit(P()).offset(P())
+    rows = conn.execute(q_rows.get_sql(), params + [args.limit, args.offset]).fetchall()
 
     # Calculate folio total
-    folio_total = conn.execute(
-        f"SELECT COALESCE(SUM(CAST(amount AS REAL)), 0) FROM hospitalityclaw_folio_charge WHERE {' AND '.join(where[:len(where)])}",
-        params[:len(params) - 2]
-    ).fetchone()[0]
+    folio_total = conn.execute(q_total.get_sql(), params).fetchone()[0]
 
     ok({"rows": [row_to_dict(r) for r in rows], "total_count": total,
         "folio_total": str(round_currency(to_decimal(str(folio_total)))),

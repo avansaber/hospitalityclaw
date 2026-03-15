@@ -14,6 +14,7 @@ try:
     from erpclaw_lib.db import get_connection, DEFAULT_DB_PATH
     from erpclaw_lib.decimal_utils import to_decimal, round_currency
     from erpclaw_lib.response import ok, err, row_to_dict
+    from erpclaw_lib.query import Q, P, Table, Field, fn, Order, insert_row
 except ImportError:
     DEFAULT_DB_PATH = "~/.openclaw/erpclaw/data.sqlite"
     pass
@@ -24,7 +25,7 @@ _now_iso = lambda: datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 def _validate_company(conn, company_id):
     if not company_id:
         err("--company-id is required")
-    row = conn.execute("SELECT id FROM company WHERE id = ?", (company_id,)).fetchone()
+    row = conn.execute(Q.from_(Table("company")).select(Field("id")).where(Field("id") == P()).get_sql(), (company_id,)).fetchone()
     if not row:
         err(f"Company {company_id} not found")
 
@@ -37,9 +38,7 @@ def occupancy_report(conn, args):
     sd = getattr(args, "start_date", None) or "2000-01-01"
     ed = getattr(args, "end_date", None) or "2099-12-31"
 
-    total_rooms = conn.execute(
-        "SELECT COUNT(*) FROM hospitalityclaw_room WHERE company_id = ?", (args.company_id,)
-    ).fetchone()[0]
+    total_rooms = conn.execute(Q.from_(Table("hospitalityclaw_room")).select(fn.Count("*")).where(Field("company_id") == P()).get_sql(), (args.company_id,)).fetchone()[0]
 
     from datetime import date as date_cls
     try:
@@ -205,10 +204,7 @@ def daily_operations_report(conn, args):
         (args.company_id,)
     ).fetchone()[0]
 
-    total_rooms = conn.execute(
-        "SELECT COUNT(*) FROM hospitalityclaw_room WHERE company_id = ?",
-        (args.company_id,)
-    ).fetchone()[0]
+    total_rooms = conn.execute(Q.from_(Table("hospitalityclaw_room")).select(fn.Count("*")).where(Field("company_id") == P()).get_sql(), (args.company_id,)).fetchone()[0]
 
     # Open requests
     open_requests = conn.execute(

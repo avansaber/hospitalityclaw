@@ -16,6 +16,7 @@ try:
     from erpclaw_lib.decimal_utils import to_decimal, round_currency
     from erpclaw_lib.response import ok, err, row_to_dict
     from erpclaw_lib.audit import audit
+    from erpclaw_lib.query import Q, P, Table, Field, fn, Order, insert_row
 except ImportError:
     pass
 
@@ -27,7 +28,7 @@ VALID_ADJUSTMENT_TYPES = ("increase", "decrease", "override")
 def _validate_company(conn, company_id):
     if not company_id:
         err("--company-id is required")
-    row = conn.execute("SELECT id FROM company WHERE id = ?", (company_id,)).fetchone()
+    row = conn.execute(Q.from_(Table("company")).select(Field("id")).where(Field("id") == P()).get_sql(), (company_id,)).fetchone()
     if not row:
         err(f"Company {company_id} not found")
 
@@ -35,7 +36,7 @@ def _validate_company(conn, company_id):
 def _validate_room_type(conn, room_type_id):
     if not room_type_id:
         err("--room-type-id is required")
-    row = conn.execute("SELECT id FROM hospitalityclaw_room_type WHERE id = ?", (room_type_id,)).fetchone()
+    row = conn.execute(Q.from_(Table("hospitalityclaw_room_type")).select(Field("id")).where(Field("id") == P()).get_sql(), (room_type_id,)).fetchone()
     if not row:
         err(f"Room type {room_type_id} not found")
 
@@ -64,11 +65,13 @@ def add_rate_adjustment(conn, args):
 
     ra_id = str(uuid.uuid4())
     now = _now_iso()
-    conn.execute("""
-        INSERT INTO hospitalityclaw_rate_adjustment (id, room_type_id, adjustment_date,
-            adjustment_type, adjustment_pct, adjusted_rate, reason, company_id, created_at)
-        VALUES (?,?,?,?,?,?,?,?,?)
-    """, (
+    sql, _ = insert_row("hospitalityclaw_rate_adjustment", {
+
+        "id": P(), "room_type_id": P(), "adjustment_date": P(), "adjustment_type": P(), "adjustment_pct": P(), "adjusted_rate": P(), "reason": P(), "company_id": P(), "created_at": P(),
+
+    })
+
+    conn.execute(sql, (
         ra_id, rt_id, adj_date, adj_type,
         getattr(args, "adjustment_pct", None),
         getattr(args, "adjusted_rate", None),
@@ -84,23 +87,45 @@ def add_rate_adjustment(conn, args):
 # 2. list-rate-adjustments
 # ---------------------------------------------------------------------------
 def list_rate_adjustments(conn, args):
-    where, params = ["1=1"], []
+    t = Table("hospitalityclaw_rate_adjustment")
+
+    q_count = Q.from_(t).select(fn.Count("*"))
+
+    q_rows = Q.from_(t).select(t.star)
+
+    params = []
+
+
     if getattr(args, "company_id", None):
-        where.append("company_id = ?")
+
+        q_count = q_count.where(t.company_id == P())
+
+        q_rows = q_rows.where(t.company_id == P())
+
         params.append(args.company_id)
+
     if getattr(args, "room_type_id", None):
-        where.append("room_type_id = ?")
+
+        q_count = q_count.where(t.room_type_id == P())
+
+        q_rows = q_rows.where(t.room_type_id == P())
+
         params.append(args.room_type_id)
+
     if getattr(args, "adjustment_type", None):
-        where.append("adjustment_type = ?")
+
+        q_count = q_count.where(t.adjustment_type == P())
+
+        q_rows = q_rows.where(t.adjustment_type == P())
+
         params.append(args.adjustment_type)
 
-    where_sql = " AND ".join(where)
-    total = conn.execute(f"SELECT COUNT(*) FROM hospitalityclaw_rate_adjustment WHERE {where_sql}", params).fetchone()[0]
-    params.extend([args.limit, args.offset])
-    rows = conn.execute(
-        f"SELECT * FROM hospitalityclaw_rate_adjustment WHERE {where_sql} ORDER BY adjustment_date DESC LIMIT ? OFFSET ?", params
-    ).fetchall()
+
+    total = conn.execute(q_count.get_sql(), params).fetchone()[0]
+
+    q_rows = q_rows.orderby(t.adjustment_date, order=Order.desc).limit(P()).offset(P())
+
+    rows = conn.execute(q_rows.get_sql(), params + [args.limit, args.offset]).fetchall()
     ok({"rows": [row_to_dict(r) for r in rows], "total_count": total,
         "limit": args.limit, "offset": args.offset, "has_more": (args.offset + args.limit) < total})
 
@@ -117,9 +142,7 @@ def occupancy_forecast(conn, args):
     if not ed:
         err("--end-date is required")
 
-    total_rooms = conn.execute(
-        "SELECT COUNT(*) FROM hospitalityclaw_room WHERE company_id = ?", (args.company_id,)
-    ).fetchone()[0]
+    total_rooms = conn.execute(Q.from_(Table("hospitalityclaw_room")).select(fn.Count("*")).where(Field("company_id") == P()).get_sql(), (args.company_id,)).fetchone()[0]
 
     occupied_nights = conn.execute(
         "SELECT COALESCE(SUM(nights), 0) FROM hospitalityclaw_reservation "
@@ -160,9 +183,7 @@ def revpar_report(conn, args):
     if not ed:
         err("--end-date is required")
 
-    total_rooms = conn.execute(
-        "SELECT COUNT(*) FROM hospitalityclaw_room WHERE company_id = ?", (args.company_id,)
-    ).fetchone()[0]
+    total_rooms = conn.execute(Q.from_(Table("hospitalityclaw_room")).select(fn.Count("*")).where(Field("company_id") == P()).get_sql(), (args.company_id,)).fetchone()[0]
 
     from datetime import date as date_cls
     try:
@@ -299,11 +320,13 @@ def set_seasonal_rates(conn, args):
 
     ra_id = str(uuid.uuid4())
     now = _now_iso()
-    conn.execute("""
-        INSERT INTO hospitalityclaw_rate_adjustment (id, room_type_id, adjustment_date,
-            adjustment_type, adjustment_pct, adjusted_rate, reason, company_id, created_at)
-        VALUES (?,?,?,?,?,?,?,?,?)
-    """, (
+    sql, _ = insert_row("hospitalityclaw_rate_adjustment", {
+
+        "id": P(), "room_type_id": P(), "adjustment_date": P(), "adjustment_type": P(), "adjustment_pct": P(), "adjusted_rate": P(), "reason": P(), "company_id": P(), "created_at": P(),
+
+    })
+
+    conn.execute(sql, (
         ra_id, rt_id, sd, "override", None,
         str(round_currency(to_decimal(adjusted_rate))),
         getattr(args, "reason", None) or f"Seasonal rate {sd} to {ed}",
@@ -337,10 +360,7 @@ def yield_analysis(conn, args):
     for rt in room_types:
         rt_id, rt_name, base_rate = rt[0], rt[1], rt[2]
 
-        rooms_count = conn.execute(
-            "SELECT COUNT(*) FROM hospitalityclaw_room WHERE room_type_id = ? AND company_id = ?",
-            (rt_id, args.company_id)
-        ).fetchone()[0]
+        rooms_count = conn.execute(Q.from_(Table("hospitalityclaw_room")).select(fn.Count("*")).where(Field("room_type_id") == P()).where(Field("company_id") == P()).get_sql(), (rt_id, args.company_id)).fetchone()[0]
 
         rev = conn.execute(
             "SELECT COALESCE(SUM(CAST(total_amount AS REAL)), 0) FROM hospitalityclaw_reservation "

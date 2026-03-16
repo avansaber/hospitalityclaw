@@ -17,7 +17,7 @@ try:
     from erpclaw_lib.naming import get_next_name, ENTITY_PREFIXES
     from erpclaw_lib.response import ok, err, row_to_dict
     from erpclaw_lib.audit import audit
-    from erpclaw_lib.query import Q, P, Table, Field, fn, Order, insert_row
+    from erpclaw_lib.query import Q, P, Table, Field, fn, Order, insert_row, LiteralValue, dynamic_update, update_row
 
     ENTITY_PREFIXES.setdefault("hospitalityclaw_reservation", "RES-")
     ENTITY_PREFIXES.setdefault("hospitalityclaw_rate_plan", "RPL-")
@@ -170,34 +170,30 @@ def update_reservation(conn, args):
     if current["reservation_status"] not in ("pending", "confirmed"):
         err(f"Cannot update reservation in '{current['reservation_status']}' status")
 
-    updates, params, changed = [], [], []
+    data, changed = {}, []
     for arg_name, col_name in {
         "special_requests": "special_requests",
     }.items():
         val = getattr(args, arg_name, None)
         if val is not None:
-            updates.append(f"{col_name} = ?")
-            params.append(val)
+            data[col_name] = val
             changed.append(col_name)
 
     rt = getattr(args, "room_type_id", None)
     if rt is not None:
         q = Q.from_(_t_room_type).select(_t_room_type.id).where(_t_room_type.id == P())
         conn.execute(q.get_sql(), (rt,)).fetchone() or err(f"Room type {rt} not found")
-        updates.append("room_type_id = ?")
-        params.append(rt)
+        data["room_type_id"] = rt
         changed.append("room_type_id")
 
     adults = getattr(args, "adults", None)
     if adults is not None:
-        updates.append("adults = ?")
-        params.append(int(adults))
+        data["adults"] = int(adults)
         changed.append("adults")
 
     children = getattr(args, "children", None)
     if children is not None:
-        updates.append("children = ?")
-        params.append(int(children))
+        data["children"] = int(children)
         changed.append("children")
 
     # Recalculate if dates or rate changed
@@ -206,33 +202,28 @@ def update_reservation(conn, args):
     ra = getattr(args, "rate_amount", None)
 
     if getattr(args, "check_in_date", None):
-        updates.append("check_in_date = ?")
-        params.append(ci)
+        data["check_in_date"] = ci
         changed.append("check_in_date")
     if getattr(args, "check_out_date", None):
-        updates.append("check_out_date = ?")
-        params.append(co)
+        data["check_out_date"] = co
         changed.append("check_out_date")
     if ra is not None:
-        updates.append("rate_amount = ?")
-        params.append(str(round_currency(to_decimal(ra))))
+        data["rate_amount"] = str(round_currency(to_decimal(ra)))
         changed.append("rate_amount")
 
     if getattr(args, "check_in_date", None) or getattr(args, "check_out_date", None) or ra is not None:
         nights = _calc_nights(ci, co)
         rate_dec = round_currency(to_decimal(ra or current["rate_amount"]))
         total = round_currency(rate_dec * Decimal(nights))
-        updates.append("nights = ?")
-        params.append(nights)
-        updates.append("total_amount = ?")
-        params.append(str(total))
+        data["nights"] = nights
+        data["total_amount"] = str(total)
 
-    if not updates:
+    if not data:
         err("No fields to update")
 
-    updates.append("updated_at = datetime('now')")
-    params.append(res_id)
-    conn.execute(f"UPDATE hospitalityclaw_reservation SET {', '.join(updates)} WHERE id = ?", params)
+    data["updated_at"] = LiteralValue("datetime('now')")
+    sql, params = dynamic_update("hospitalityclaw_reservation", data, {"id": res_id})
+    conn.execute(sql, params)
     audit(conn, "hospitalityclaw_reservation", res_id, "hospitality-update-reservation", None, {"updated_fields": changed})
     conn.commit()
     ok({"id": res_id, "updated_fields": changed})
@@ -321,10 +312,10 @@ def confirm_reservation(conn, args):
     if row[0] != "pending":
         err(f"Cannot confirm reservation in '{row[0]}' status (must be pending)")
 
-    conn.execute(
-        "UPDATE hospitalityclaw_reservation SET reservation_status = 'confirmed', updated_at = datetime('now') WHERE id = ?",
-        (res_id,)
-    )
+    sql, params = dynamic_update("hospitalityclaw_reservation",
+        {"reservation_status": "confirmed", "updated_at": LiteralValue("datetime('now')")},
+        {"id": res_id})
+    conn.execute(sql, params)
     audit(conn, "hospitalityclaw_reservation", res_id, "hospitality-confirm-reservation", None)
     conn.commit()
     ok({"id": res_id, "reservation_status": "confirmed"})
@@ -344,10 +335,10 @@ def cancel_reservation(conn, args):
     if row[0] in ("checked_in", "checked_out", "cancelled"):
         err(f"Cannot cancel reservation in '{row[0]}' status")
 
-    conn.execute(
-        "UPDATE hospitalityclaw_reservation SET reservation_status = 'cancelled', updated_at = datetime('now') WHERE id = ?",
-        (res_id,)
-    )
+    sql, params = dynamic_update("hospitalityclaw_reservation",
+        {"reservation_status": "cancelled", "updated_at": LiteralValue("datetime('now')")},
+        {"id": res_id})
+    conn.execute(sql, params)
     audit(conn, "hospitalityclaw_reservation", res_id, "hospitality-cancel-reservation", None,
           {"reason": getattr(args, "reason", None)})
     conn.commit()

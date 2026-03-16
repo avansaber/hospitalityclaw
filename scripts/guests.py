@@ -21,9 +21,14 @@ try:
     from erpclaw_lib.response import ok, err, row_to_dict
     from erpclaw_lib.audit import audit
     from erpclaw_lib.cross_skill import create_customer, CrossSkillError
-    from erpclaw_lib.query import Q, P, Table, Field, fn, Order, insert_row
+    from erpclaw_lib.query import Q, P, Table, Field, fn, Order, insert_row, LiteralValue
 
     ENTITY_PREFIXES.setdefault("hospitalityclaw_guest_ext", "HGST-")
+
+    _t_guest_ext = Table("hospitalityclaw_guest_ext")
+    _t_customer = Table("customer")
+    _t_pref = Table("hospitalityclaw_guest_preference")
+    _t_reservation = Table("hospitalityclaw_reservation")
 except ImportError:
     pass
 
@@ -125,7 +130,7 @@ def update_guest(conn, args):
     customer_id = ext_row[0]
 
     # Core customer fields: update directly in customer table
-    core_updates, core_params, changed = [], [], []
+    core_data, changed = {}, []
     cols_set = set()
     for arg_name, col_name in {
         "customer_name": "name",
@@ -139,41 +144,40 @@ def update_guest(conn, args):
             if col_name in cols_set:
                 continue
             cols_set.add(col_name)
-            core_updates.append(f"{col_name} = ?")
-            core_params.append(val)
+            core_data[col_name] = val
             changed.append(arg_name)
 
-    if core_updates:
-        core_updates.append("updated_at = datetime('now')")
-        core_params.append(customer_id)
-        conn.execute(f"UPDATE customer SET {', '.join(core_updates)} WHERE id = ?", core_params)
+    if core_data:
+        from erpclaw_lib.query import dynamic_update
+        core_data["updated_at"] = LiteralValue("datetime('now')")
+        sql, params_du = dynamic_update("customer", core_data, {"id": customer_id})
+        conn.execute(sql, params_du)
 
     # Extension fields: update in guest_ext table
-    ext_updates, ext_params = [], []
+    ext_data = {}
     for arg_name, col_name in {
         "id_type": "id_type", "id_number": "id_number",
         "nationality": "nationality",
     }.items():
         val = getattr(args, arg_name, None)
         if val is not None:
-            ext_updates.append(f"{col_name} = ?")
-            ext_params.append(val)
+            ext_data[col_name] = val
             changed.append(col_name)
 
     vip = getattr(args, "vip_level", None)
     if vip is not None:
         _validate_enum(vip, VALID_VIP_LEVELS, "vip-level")
-        ext_updates.append("vip_level = ?")
-        ext_params.append(vip)
+        ext_data["vip_level"] = vip
         changed.append("vip_level")
 
     if not changed:
         err("No fields to update")
 
-    if ext_updates:
-        ext_updates.append("updated_at = datetime('now')")
-        ext_params.append(guest_id)
-        conn.execute(f"UPDATE hospitalityclaw_guest_ext SET {', '.join(ext_updates)} WHERE id = ?", ext_params)
+    if ext_data:
+        from erpclaw_lib.query import dynamic_update
+        ext_data["updated_at"] = LiteralValue("datetime('now')")
+        sql, params_du = dynamic_update("hospitalityclaw_guest_ext", ext_data, {"id": guest_id})
+        conn.execute(sql, params_du)
 
     audit(conn, "hospitalityclaw_guest_ext", guest_id, "hospitality-update-guest", None, {"updated_fields": changed})
     conn.commit()
@@ -187,12 +191,12 @@ def get_guest(conn, args):
     guest_id = getattr(args, "guest_id", None)
     _validate_guest(conn, guest_id)
 
-    row = conn.execute("""
-        SELECT g.*, c.name as customer_name, c.email, c.phone
-        FROM hospitalityclaw_guest_ext g
-        JOIN customer c ON c.id = g.customer_id
-        WHERE g.id = ?
-    """, (guest_id,)).fetchone()
+    g = _t_guest_ext
+    c = _t_customer
+    q = (Q.from_(g).join(c).on(c.id == g.customer_id)
+         .select(g.star, c.name.as_("customer_name"), c.email, c.phone)
+         .where(g.id == P()))
+    row = conn.execute(q.get_sql(), (guest_id,)).fetchone()
     data = row_to_dict(row)
 
     # Enrich with preference count and reservation count
@@ -207,32 +211,31 @@ def get_guest(conn, args):
 # 4. list-guests
 # ---------------------------------------------------------------------------
 def list_guests(conn, args):
-    where, params = ["1=1"], []
+    g = _t_guest_ext
+    c = _t_customer
+    base = Q.from_(g).join(c).on(c.id == g.customer_id)
+    q_count = base.select(fn.Count("*"))
+    q_rows = base.select(g.star, c.name.as_("customer_name"), c.email, c.phone)
+    params = []
+
     if getattr(args, "company_id", None):
-        where.append("g.company_id = ?")
+        q_count = q_count.where(g.company_id == P())
+        q_rows = q_rows.where(g.company_id == P())
         params.append(args.company_id)
     if getattr(args, "vip_level", None):
-        where.append("g.vip_level = ?")
+        q_count = q_count.where(g.vip_level == P())
+        q_rows = q_rows.where(g.vip_level == P())
         params.append(args.vip_level)
     if getattr(args, "search", None):
-        where.append("(c.name LIKE ? OR c.email LIKE ? OR c.phone LIKE ?)")
         s = f"%{args.search}%"
+        like_crit = (c.name.like(P()) | c.email.like(P()) | c.phone.like(P()))
+        q_count = q_count.where(like_crit)
+        q_rows = q_rows.where(like_crit)
         params.extend([s, s, s])
 
-    where_sql = " AND ".join(where)
-    total = conn.execute(
-        f"SELECT COUNT(*) FROM hospitalityclaw_guest_ext g JOIN customer c ON c.id = g.customer_id WHERE {where_sql}",
-        params,
-    ).fetchone()[0]
-    params.extend([args.limit, args.offset])
-    rows = conn.execute(
-        f"""SELECT g.*, c.name as customer_name, c.email, c.phone
-            FROM hospitalityclaw_guest_ext g
-            JOIN customer c ON c.id = g.customer_id
-            WHERE {where_sql}
-            ORDER BY g.created_at DESC LIMIT ? OFFSET ?""",
-        params,
-    ).fetchall()
+    total = conn.execute(q_count.get_sql(), params).fetchone()[0]
+    q_rows = q_rows.orderby(g.created_at, order=Order.desc).limit(P()).offset(P())
+    rows = conn.execute(q_rows.get_sql(), params + [args.limit, args.offset]).fetchall()
     ok({"rows": [row_to_dict(r) for r in rows], "total_count": total,
         "limit": args.limit, "offset": args.offset, "has_more": (args.offset + args.limit) < total})
 
@@ -275,17 +278,19 @@ def list_guest_preferences(conn, args):
     guest_id = getattr(args, "guest_id", None)
     _validate_guest(conn, guest_id)
 
-    where, params = ["guest_id = ?"], [guest_id]
+    t = _t_pref
+    q_count = Q.from_(t).select(fn.Count("*")).where(t.guest_id == P())
+    q_rows = Q.from_(t).select(t.star).where(t.guest_id == P())
+    params = [guest_id]
+
     if getattr(args, "preference_type", None):
-        where.append("preference_type = ?")
+        q_count = q_count.where(t.preference_type == P())
+        q_rows = q_rows.where(t.preference_type == P())
         params.append(args.preference_type)
 
-    where_sql = " AND ".join(where)
-    total = conn.execute(f"SELECT COUNT(*) FROM hospitalityclaw_guest_preference WHERE {where_sql}", params).fetchone()[0]
-    params.extend([args.limit, args.offset])
-    rows = conn.execute(
-        f"SELECT * FROM hospitalityclaw_guest_preference WHERE {where_sql} ORDER BY created_at DESC LIMIT ? OFFSET ?", params
-    ).fetchall()
+    total = conn.execute(q_count.get_sql(), params).fetchone()[0]
+    q_rows = q_rows.orderby(t.created_at, order=Order.desc).limit(P()).offset(P())
+    rows = conn.execute(q_rows.get_sql(), params + [args.limit, args.offset]).fetchall()
     ok({"rows": [row_to_dict(r) for r in rows], "total_count": total,
         "limit": args.limit, "offset": args.offset, "has_more": (args.offset + args.limit) < total})
 
@@ -297,13 +302,14 @@ def guest_history(conn, args):
     guest_id = getattr(args, "guest_id", None)
     _validate_guest(conn, guest_id)
 
-    where_sql = "guest_id = ?"
+    t = _t_reservation
+    q_count = Q.from_(t).select(fn.Count("*")).where(t.guest_id == P())
+    q_rows = Q.from_(t).select(t.star).where(t.guest_id == P())
     params = [guest_id]
-    total = conn.execute(f"SELECT COUNT(*) FROM hospitalityclaw_reservation WHERE {where_sql}", params).fetchone()[0]
-    params.extend([args.limit, args.offset])
-    rows = conn.execute(
-        f"SELECT * FROM hospitalityclaw_reservation WHERE {where_sql} ORDER BY check_in_date DESC LIMIT ? OFFSET ?", params
-    ).fetchall()
+
+    total = conn.execute(q_count.get_sql(), params).fetchone()[0]
+    q_rows = q_rows.orderby(t.check_in_date, order=Order.desc).limit(P()).offset(P())
+    rows = conn.execute(q_rows.get_sql(), params + [args.limit, args.offset]).fetchall()
     ok({"rows": [row_to_dict(r) for r in rows], "total_count": total,
         "limit": args.limit, "offset": args.offset, "has_more": (args.offset + args.limit) < total})
 
@@ -315,12 +321,12 @@ def loyalty_summary(conn, args):
     guest_id = getattr(args, "guest_id", None)
     _validate_guest(conn, guest_id)
 
-    row = conn.execute("""
-        SELECT c.name, g.vip_level, g.loyalty_points, g.total_stays, g.total_spent
-        FROM hospitalityclaw_guest_ext g
-        JOIN customer c ON c.id = g.customer_id
-        WHERE g.id = ?
-    """, (guest_id,)).fetchone()
+    g = _t_guest_ext
+    c = _t_customer
+    q = (Q.from_(g).join(c).on(c.id == g.customer_id)
+         .select(c.name, g.vip_level, g.loyalty_points, g.total_stays, g.total_spent)
+         .where(g.id == P()))
+    row = conn.execute(q.get_sql(), (guest_id,)).fetchone()
     ok({
         "guest_id": guest_id,
         "customer_name": row[0],

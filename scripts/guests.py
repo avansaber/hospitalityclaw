@@ -126,20 +126,22 @@ def update_guest(conn, args):
 
     # Core customer fields: update directly in customer table
     core_updates, core_params, changed = [], [], []
+    cols_set = set()
     for arg_name, col_name in {
-        "customer_name": "customer_name",
-        "name": "customer_name",
+        "customer_name": "name",
+        "name": "name",
         "email": "email",
         "phone": "phone",
     }.items():
         val = getattr(args, arg_name, None)
         if val is not None:
-            # Avoid duplicate customer_name if both --name and --customer-name given
-            if col_name == "customer_name" and "customer_name" in changed:
+            # Avoid duplicate name if both --name and --customer-name given
+            if col_name in cols_set:
                 continue
+            cols_set.add(col_name)
             core_updates.append(f"{col_name} = ?")
             core_params.append(val)
-            changed.append(col_name)
+            changed.append(arg_name)
 
     if core_updates:
         core_updates.append("updated_at = datetime('now')")
@@ -186,7 +188,7 @@ def get_guest(conn, args):
     _validate_guest(conn, guest_id)
 
     row = conn.execute("""
-        SELECT g.*, c.customer_name, c.email, c.phone
+        SELECT g.*, c.name as customer_name, c.email, c.phone
         FROM hospitalityclaw_guest_ext g
         JOIN customer c ON c.id = g.customer_id
         WHERE g.id = ?
@@ -213,7 +215,7 @@ def list_guests(conn, args):
         where.append("g.vip_level = ?")
         params.append(args.vip_level)
     if getattr(args, "search", None):
-        where.append("(c.customer_name LIKE ? OR c.email LIKE ? OR c.phone LIKE ?)")
+        where.append("(c.name LIKE ? OR c.email LIKE ? OR c.phone LIKE ?)")
         s = f"%{args.search}%"
         params.extend([s, s, s])
 
@@ -224,7 +226,7 @@ def list_guests(conn, args):
     ).fetchone()[0]
     params.extend([args.limit, args.offset])
     rows = conn.execute(
-        f"""SELECT g.*, c.customer_name, c.email, c.phone
+        f"""SELECT g.*, c.name as customer_name, c.email, c.phone
             FROM hospitalityclaw_guest_ext g
             JOIN customer c ON c.id = g.customer_id
             WHERE {where_sql}
@@ -314,7 +316,7 @@ def loyalty_summary(conn, args):
     _validate_guest(conn, guest_id)
 
     row = conn.execute("""
-        SELECT c.customer_name, g.vip_level, g.loyalty_points, g.total_stays, g.total_spent
+        SELECT c.name, g.vip_level, g.loyalty_points, g.total_stays, g.total_spent
         FROM hospitalityclaw_guest_ext g
         JOIN customer c ON c.id = g.customer_id
         WHERE g.id = ?

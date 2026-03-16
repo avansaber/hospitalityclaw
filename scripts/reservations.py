@@ -255,7 +255,7 @@ def get_reservation(conn, args):
     ge = _t_guest_ext
     c = _t_customer
     q = (Q.from_(ge).join(c).on(c.id == ge.customer_id)
-         .select(c.customer_name).where(ge.id == P()))
+         .select(c.name).where(ge.id == P()))
     g = conn.execute(q.get_sql(), (data["guest_id"],)).fetchone()
     data["guest_name"] = g[0] if g else None
 

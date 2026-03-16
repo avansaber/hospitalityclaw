@@ -69,11 +69,11 @@ def init_all_tables(db_path: str):
     spec.loader.exec_module(schema_mod)
     schema_mod.init_db(db_path)
 
-    # Step 2: The hospitalityclaw guests code references c.customer_name, c.email,
-    # c.phone on the customer table via JOINs. Add these columns if missing.
+    # Step 2: The hospitalityclaw guests code references c.name, c.email,
+    # c.phone on the customer table. email/phone/modified may not be in
+    # the core schema — add them if missing so JOIN queries work in tests.
     conn = sqlite3.connect(db_path)
     for col_def in [
-        "ALTER TABLE customer ADD COLUMN customer_name TEXT",
         "ALTER TABLE customer ADD COLUMN email TEXT",
         "ALTER TABLE customer ADD COLUMN phone TEXT",
         "ALTER TABLE customer ADD COLUMN modified TEXT",
@@ -310,17 +310,13 @@ def seed_company(conn, name="Grand Hotel LLC", abbr="GH") -> str:
 
 def seed_customer(conn, company_id: str, name="Alice Guest",
                   email=None, phone=None) -> str:
-    """Insert a core customer and return its ID.
-
-    Populates both 'name' and 'customer_name' columns since hospitalityclaw
-    references customer_name in JOIN queries.
-    """
+    """Insert a core customer and return its ID."""
     cid = _uuid()
     conn.execute(
-        """INSERT INTO customer (id, name, customer_name, email, phone,
+        """INSERT INTO customer (id, name, email, phone,
            company_id, customer_type, status)
-           VALUES (?, ?, ?, ?, ?, ?, 'individual', 'active')""",
-        (cid, name, name, email, phone, company_id)
+           VALUES (?, ?, ?, ?, ?, 'individual', 'active')""",
+        (cid, name, email, phone, company_id)
     )
     conn.commit()
     return cid

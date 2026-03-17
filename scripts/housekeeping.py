@@ -327,7 +327,7 @@ def laundry_summary(conn, args):
 
     # Laundry charges from folio
     laundry_total = conn.execute(
-        "SELECT COALESCE(SUM(CAST(amount AS REAL)), 0) FROM hospitalityclaw_folio_charge "
+        "SELECT COALESCE(SUM(CAST(amount AS NUMERIC)), 0) FROM hospitalityclaw_folio_charge "
         "WHERE company_id = ? AND charge_type = 'laundry' AND charge_date >= ? AND charge_date <= ?",
         (company_id, sd, ed)
     ).fetchone()[0]

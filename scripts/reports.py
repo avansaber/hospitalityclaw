@@ -76,14 +76,14 @@ def revenue_report(conn, args):
     ed = getattr(args, "end_date", None) or "2099-12-31"
 
     room_rev = conn.execute(
-        "SELECT COALESCE(SUM(CAST(total_amount AS REAL)), 0) FROM hospitalityclaw_reservation "
+        "SELECT COALESCE(SUM(CAST(total_amount AS NUMERIC)), 0) FROM hospitalityclaw_reservation "
         "WHERE company_id = ? AND check_in_date >= ? AND check_in_date <= ? "
         "AND reservation_status IN ('confirmed','checked_in','checked_out')",
         (args.company_id, sd, ed)
     ).fetchone()[0]
 
     folio_rev = conn.execute(
-        "SELECT COALESCE(SUM(CAST(amount AS REAL)), 0) FROM hospitalityclaw_folio_charge "
+        "SELECT COALESCE(SUM(CAST(amount AS NUMERIC)), 0) FROM hospitalityclaw_folio_charge "
         "WHERE company_id = ? AND charge_date >= ? AND charge_date <= ?",
         (args.company_id, sd, ed)
     ).fetchone()[0]

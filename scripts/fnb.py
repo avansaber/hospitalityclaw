@@ -341,7 +341,7 @@ def fnb_revenue_report(conn, args):
     ed = getattr(args, "end_date", None) or "2099-12-31"
 
     rso_revenue = conn.execute(
-        "SELECT COALESCE(SUM(CAST(total_amount AS REAL)), 0) FROM hospitalityclaw_room_service_order "
+        "SELECT COALESCE(SUM(CAST(total_amount AS NUMERIC)), 0) FROM hospitalityclaw_room_service_order "
         "WHERE company_id = ? AND order_status != 'cancelled' "
         "AND created_at >= ? AND created_at <= ?",
         (args.company_id, sd, ed + "T23:59:59Z")
@@ -355,7 +355,7 @@ def fnb_revenue_report(conn, args):
     ).fetchone()[0]
 
     minibar_revenue = conn.execute(
-        "SELECT COALESCE(SUM(CAST(total AS REAL)), 0) FROM hospitalityclaw_minibar_consumption "
+        "SELECT COALESCE(SUM(CAST(total AS NUMERIC)), 0) FROM hospitalityclaw_minibar_consumption "
         "WHERE company_id = ? AND consumption_date >= ? AND consumption_date <= ?",
         (args.company_id, sd, ed)
     ).fetchone()[0]

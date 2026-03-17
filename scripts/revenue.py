@@ -194,7 +194,7 @@ def revpar_report(conn, args):
     available_nights = total_rooms * days
 
     total_revenue = conn.execute(
-        "SELECT COALESCE(SUM(CAST(total_amount AS REAL)), 0) FROM hospitalityclaw_reservation "
+        "SELECT COALESCE(SUM(CAST(total_amount AS NUMERIC)), 0) FROM hospitalityclaw_reservation "
         "WHERE company_id = ? AND check_in_date >= ? AND check_in_date <= ? "
         "AND reservation_status IN ('confirmed','checked_in','checked_out')",
         (args.company_id, sd, ed)
@@ -226,7 +226,7 @@ def adr_report(conn, args):
         err("--end-date is required")
 
     total_revenue = conn.execute(
-        "SELECT COALESCE(SUM(CAST(total_amount AS REAL)), 0) FROM hospitalityclaw_reservation "
+        "SELECT COALESCE(SUM(CAST(total_amount AS NUMERIC)), 0) FROM hospitalityclaw_reservation "
         "WHERE company_id = ? AND check_in_date >= ? AND check_in_date <= ? "
         "AND reservation_status IN ('confirmed','checked_in','checked_out')",
         (args.company_id, sd, ed)
@@ -260,27 +260,27 @@ def revenue_summary(conn, args):
     ed = getattr(args, "end_date", None) or "2099-12-31"
 
     room_revenue = conn.execute(
-        "SELECT COALESCE(SUM(CAST(total_amount AS REAL)), 0) FROM hospitalityclaw_reservation "
+        "SELECT COALESCE(SUM(CAST(total_amount AS NUMERIC)), 0) FROM hospitalityclaw_reservation "
         "WHERE company_id = ? AND check_in_date >= ? AND check_in_date <= ? "
         "AND reservation_status IN ('confirmed','checked_in','checked_out')",
         (args.company_id, sd, ed)
     ).fetchone()[0]
 
     folio_revenue = conn.execute(
-        "SELECT COALESCE(SUM(CAST(amount AS REAL)), 0) FROM hospitalityclaw_folio_charge "
+        "SELECT COALESCE(SUM(CAST(amount AS NUMERIC)), 0) FROM hospitalityclaw_folio_charge "
         "WHERE company_id = ? AND charge_date >= ? AND charge_date <= ?",
         (args.company_id, sd, ed)
     ).fetchone()[0]
 
     fnb_revenue = conn.execute(
-        "SELECT COALESCE(SUM(CAST(total_amount AS REAL)), 0) FROM hospitalityclaw_room_service_order "
+        "SELECT COALESCE(SUM(CAST(total_amount AS NUMERIC)), 0) FROM hospitalityclaw_room_service_order "
         "WHERE company_id = ? AND order_status != 'cancelled' "
         "AND created_at >= ? AND created_at <= ?",
         (args.company_id, sd, ed + "T23:59:59Z")
     ).fetchone()[0]
 
     minibar_revenue = conn.execute(
-        "SELECT COALESCE(SUM(CAST(total AS REAL)), 0) FROM hospitalityclaw_minibar_consumption "
+        "SELECT COALESCE(SUM(CAST(total AS NUMERIC)), 0) FROM hospitalityclaw_minibar_consumption "
         "WHERE company_id = ? AND consumption_date >= ? AND consumption_date <= ?",
         (args.company_id, sd, ed)
     ).fetchone()[0]
@@ -363,7 +363,7 @@ def yield_analysis(conn, args):
         rooms_count = conn.execute(Q.from_(Table("hospitalityclaw_room")).select(fn.Count("*")).where(Field("room_type_id") == P()).where(Field("company_id") == P()).get_sql(), (rt_id, args.company_id)).fetchone()[0]
 
         rev = conn.execute(
-            "SELECT COALESCE(SUM(CAST(total_amount AS REAL)), 0) FROM hospitalityclaw_reservation "
+            "SELECT COALESCE(SUM(CAST(total_amount AS NUMERIC)), 0) FROM hospitalityclaw_reservation "
             "WHERE room_type_id = ? AND company_id = ? AND check_in_date >= ? AND check_in_date <= ? "
             "AND reservation_status IN ('confirmed','checked_in','checked_out')",
             (rt_id, args.company_id, sd, ed)

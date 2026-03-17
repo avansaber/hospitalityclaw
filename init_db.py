@@ -25,7 +25,8 @@ REQUIRED_FOUNDATION = [
 
 def create_hospitalityclaw_tables(db_path):
     conn = sqlite3.connect(db_path)
-    conn.execute("PRAGMA foreign_keys=ON")
+    from erpclaw_lib.db import setup_pragmas
+    setup_pragmas(conn)
 
     # -- Verify ERPClaw foundation --
     tables = [r[0] for r in conn.execute(
@@ -117,8 +118,8 @@ def create_hospitalityclaw_tables(db_path):
             total_spent TEXT NOT NULL DEFAULT '0',
             is_active INTEGER NOT NULL DEFAULT 1,
             company_id TEXT NOT NULL REFERENCES company(id),
-            created_at TEXT DEFAULT (datetime('now')),
-            updated_at TEXT DEFAULT (datetime('now'))
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT DEFAULT CURRENT_TIMESTAMP
         );
         CREATE INDEX IF NOT EXISTS idx_hospitalityclaw_guest_ext_company ON hospitalityclaw_guest_ext(company_id);
         CREATE INDEX IF NOT EXISTS idx_hospitalityclaw_guest_ext_vip ON hospitalityclaw_guest_ext(vip_level);

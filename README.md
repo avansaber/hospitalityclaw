@@ -1,6 +1,6 @@
 # HospitalityClaw
 
-Hotel and hospitality management for [ERPClaw](https://github.com/avansaber/erpclaw). Rooms, reservations, front desk operations, housekeeping, guest profiles, revenue management, and F&B outlets. 73 actions across 8 domains. Operator-side hotel management -- guest-facing booking is handled by third-party channels.
+Hotel and hospitality management for [ERPClaw](https://github.com/avansaber/erpclaw). Rooms, reservations, front desk operations, housekeeping, guest profiles, revenue management, and F&B outlets. <!-- SYNC:value:module.hospitalityclaw.actions -->73<!-- /SYNC --> actions across 8 domains. Operator-side hotel management -- guest-facing booking is handled by third-party channels.
 
 ## Features
 

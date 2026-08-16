@@ -11,13 +11,15 @@ from datetime import datetime, timezone, date
 from decimal import Decimal
 
 try:
-    sys.path.insert(0, os.path.join(os.path.expanduser(os.environ.get("ERPCLAW_HOME", "~/.openclaw/erpclaw")), "lib"))
+    import importlib.util
+    if importlib.util.find_spec("erpclaw_lib") is None:
+        sys.path.insert(0, os.path.join(os.path.expanduser(os.environ.get("ERPCLAW_HOME", "~/.openclaw/erpclaw")), "lib"))
     from erpclaw_lib.db import get_connection
     from erpclaw_lib.decimal_utils import to_decimal, round_currency
     from erpclaw_lib.naming import get_next_name, ENTITY_PREFIXES
     from erpclaw_lib.response import ok, err, row_to_dict
     from erpclaw_lib.audit import audit
-    from erpclaw_lib.query import Q, P, Table, Field, fn, Order, insert_row, LiteralValue, dynamic_update, update_row
+    from erpclaw_lib.query import Field, Order, P, Q, Table, dynamic_update, fn, insert_row, now as sql_now, update_row
 
     ENTITY_PREFIXES.setdefault("hospitalityclaw_reservation", "RES-")
     ENTITY_PREFIXES.setdefault("hospitalityclaw_rate_plan", "RPL-")
@@ -221,7 +223,7 @@ def update_reservation(conn, args):
     if not data:
         err("No fields to update")
 
-    data["updated_at"] = LiteralValue("datetime('now')")
+    data["updated_at"] = sql_now()
     sql, params = dynamic_update("hospitalityclaw_reservation", data, {"id": res_id})
     conn.execute(sql, params)
     audit(conn, "hospitalityclaw_reservation", res_id, "hospitality-update-reservation", None, {"updated_fields": changed})
@@ -313,7 +315,7 @@ def confirm_reservation(conn, args):
         err(f"Cannot confirm reservation in '{row[0]}' status (must be pending)")
 
     sql, params = dynamic_update("hospitalityclaw_reservation",
-        {"reservation_status": "confirmed", "updated_at": LiteralValue("datetime('now')")},
+        {"reservation_status": "confirmed", "updated_at": sql_now()},
         {"id": res_id})
     conn.execute(sql, params)
     audit(conn, "hospitalityclaw_reservation", res_id, "hospitality-confirm-reservation", None)
@@ -336,7 +338,7 @@ def cancel_reservation(conn, args):
         err(f"Cannot cancel reservation in '{row[0]}' status")
 
     sql, params = dynamic_update("hospitalityclaw_reservation",
-        {"reservation_status": "cancelled", "updated_at": LiteralValue("datetime('now')")},
+        {"reservation_status": "cancelled", "updated_at": sql_now()},
         {"id": res_id})
     conn.execute(sql, params)
     audit(conn, "hospitalityclaw_reservation", res_id, "hospitality-cancel-reservation", None,

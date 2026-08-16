@@ -14,14 +14,16 @@ from datetime import datetime, timezone
 from decimal import Decimal
 
 try:
-    sys.path.insert(0, os.path.join(os.path.expanduser(os.environ.get("ERPCLAW_HOME", "~/.openclaw/erpclaw")), "lib"))
+    import importlib.util
+    if importlib.util.find_spec("erpclaw_lib") is None:
+        sys.path.insert(0, os.path.join(os.path.expanduser(os.environ.get("ERPCLAW_HOME", "~/.openclaw/erpclaw")), "lib"))
     from erpclaw_lib.db import get_connection
     from erpclaw_lib.decimal_utils import to_decimal, round_currency
     from erpclaw_lib.naming import get_next_name, ENTITY_PREFIXES
     from erpclaw_lib.response import ok, err, row_to_dict
     from erpclaw_lib.audit import audit
     from erpclaw_lib.cross_skill import create_customer, CrossSkillError
-    from erpclaw_lib.query import Q, P, Table, Field, fn, Order, insert_row, LiteralValue
+    from erpclaw_lib.query import Field, Order, P, Q, Table, fn, insert_row, now as sql_now
 
     ENTITY_PREFIXES.setdefault("hospitalityclaw_guest_ext", "HGST-")
 
@@ -149,7 +151,7 @@ def update_guest(conn, args):
 
     if core_data:
         from erpclaw_lib.query import dynamic_update
-        core_data["updated_at"] = LiteralValue("datetime('now')")
+        core_data["updated_at"] = sql_now()
         sql, params_du = dynamic_update("customer", core_data, {"id": customer_id})
         conn.execute(sql, params_du)
 
@@ -175,7 +177,7 @@ def update_guest(conn, args):
 
     if ext_data:
         from erpclaw_lib.query import dynamic_update
-        ext_data["updated_at"] = LiteralValue("datetime('now')")
+        ext_data["updated_at"] = sql_now()
         sql, params_du = dynamic_update("hospitalityclaw_guest_ext", ext_data, {"id": guest_id})
         conn.execute(sql, params_du)
 

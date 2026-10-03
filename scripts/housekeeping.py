@@ -22,6 +22,8 @@ try:
 except ImportError:
     pass
 
+SKILL = "hospitalityclaw"
+
 _now_iso = lambda: datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 VALID_TASK_TYPES = ("checkout_clean", "stayover_clean", "deep_clean", "turndown", "inspection")
@@ -82,7 +84,7 @@ def add_housekeeping_task(conn, args):
         getattr(args, "notes", None),
         company_id, now,
     ))
-    audit(conn, "hospitalityclaw_housekeeping_task", task_id, "hospitality-add-housekeeping-task", company_id)
+    audit(conn, SKILL, "hospitality-add-housekeeping-task", "hospitalityclaw_housekeeping_task", task_id)
     conn.commit()
     ok({"id": task_id, "task_type": tt, "task_status": "pending", "scheduled_date": sd})
 
@@ -160,7 +162,7 @@ def start_housekeeping_task(conn, args):
         "UPDATE hospitalityclaw_housekeeping_task SET task_status = 'in_progress', started_at = ? WHERE id = ?",
         (now, task_id)
     )
-    audit(conn, "hospitalityclaw_housekeeping_task", task_id, "hospitality-start-housekeeping-task", None)
+    audit(conn, SKILL, "hospitality-start-housekeeping-task", "hospitalityclaw_housekeeping_task", task_id)
     conn.commit()
     ok({"id": task_id, "task_status": "in_progress"})
 
@@ -198,7 +200,7 @@ def complete_housekeeping_task(conn, args):
             (now, room_id)
         )
 
-    audit(conn, "hospitalityclaw_housekeeping_task", task_id, "hospitality-complete-housekeeping-task", None)
+    audit(conn, SKILL, "hospitality-complete-housekeeping-task", "hospitalityclaw_housekeeping_task", task_id)
     conn.commit()
     ok({"id": task_id, "task_status": "completed"})
 
@@ -237,7 +239,7 @@ def add_inspection(conn, args):
         insp_id, room_id, inspector, insp_date, score_int, passed,
         getattr(args, "notes", None), company_id, now,
     ))
-    audit(conn, "hospitalityclaw_inspection", insp_id, "hospitality-add-inspection", company_id)
+    audit(conn, SKILL, "hospitality-add-inspection", "hospitalityclaw_inspection", insp_id)
     conn.commit()
     ok({"id": insp_id, "score": score_int, "passed": passed})
 

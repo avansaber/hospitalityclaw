@@ -27,6 +27,8 @@ try:
 except ImportError:
     pass
 
+SKILL = "hospitalityclaw"
+
 _now_iso = lambda: datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 VALID_RESERVATION_STATUSES = ("pending", "confirmed", "checked_in", "checked_out", "cancelled", "no_show")
@@ -149,7 +151,7 @@ def add_reservation(conn, args):
         getattr(args, "special_requests", None),
         args.company_id, now, now,
     ))
-    audit(conn, "hospitalityclaw_reservation", res_id, "hospitality-add-reservation", args.company_id)
+    audit(conn, SKILL, "hospitality-add-reservation", "hospitalityclaw_reservation", res_id)
     conn.commit()
     ok({"id": res_id, "naming_series": naming, "reservation_status": "pending",
         "nights": nights, "total_amount": str(total)})
@@ -226,7 +228,7 @@ def update_reservation(conn, args):
     data["updated_at"] = sql_now()
     sql, params = dynamic_update("hospitalityclaw_reservation", data, {"id": res_id})
     conn.execute(sql, params)
-    audit(conn, "hospitalityclaw_reservation", res_id, "hospitality-update-reservation", None, {"updated_fields": changed})
+    audit(conn, SKILL, "hospitality-update-reservation", "hospitalityclaw_reservation", res_id, new_values={"updated_fields": changed})
     conn.commit()
     ok({"id": res_id, "updated_fields": changed})
 
@@ -318,7 +320,7 @@ def confirm_reservation(conn, args):
         {"reservation_status": "confirmed", "updated_at": sql_now()},
         {"id": res_id})
     conn.execute(sql, params)
-    audit(conn, "hospitalityclaw_reservation", res_id, "hospitality-confirm-reservation", None)
+    audit(conn, SKILL, "hospitality-confirm-reservation", "hospitalityclaw_reservation", res_id)
     conn.commit()
     ok({"id": res_id, "reservation_status": "confirmed"})
 
@@ -341,8 +343,8 @@ def cancel_reservation(conn, args):
         {"reservation_status": "cancelled", "updated_at": sql_now()},
         {"id": res_id})
     conn.execute(sql, params)
-    audit(conn, "hospitalityclaw_reservation", res_id, "hospitality-cancel-reservation", None,
-          {"reason": getattr(args, "reason", None)})
+    audit(conn, SKILL, "hospitality-cancel-reservation", "hospitalityclaw_reservation", res_id,
+          new_values={"reason": getattr(args, "reason", None)})
     conn.commit()
     ok({"id": res_id, "reservation_status": "cancelled"})
 
@@ -385,7 +387,7 @@ def add_rate_plan(conn, args):
         str(round_currency(to_decimal(rate_amount))),
         sd, ed, rate_type, 1, args.company_id, now,
     ))
-    audit(conn, "hospitalityclaw_rate_plan", rp_id, "hospitality-add-rate-plan", args.company_id)
+    audit(conn, SKILL, "hospitality-add-rate-plan", "hospitalityclaw_rate_plan", rp_id)
     conn.commit()
     ok({"id": rp_id, "naming_series": naming, "name": name, "rate_type": rate_type})
 
@@ -502,7 +504,7 @@ def add_group_block(conn, args):
         str(round_currency(to_decimal(getattr(args, "rate_amount", None) or "0"))),
         "tentative", args.company_id, now, now,
     ))
-    audit(conn, "hospitalityclaw_group_block", gb_id, "hospitality-add-group-block", args.company_id)
+    audit(conn, SKILL, "hospitality-add-group-block", "hospitalityclaw_group_block", gb_id)
     conn.commit()
     ok({"id": gb_id, "naming_series": naming, "name": name, "block_status": "tentative"})
 

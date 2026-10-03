@@ -97,12 +97,16 @@ class TestCheckIn:
 class TestCheckOut:
     """hospitality-check-out"""
 
-    def test_check_out_ok(self, conn, env):
+    def test_check_out_ok(self, conn, env, monkeypatch):
+        monkeypatch.setitem(ACTIONS["hospitality-check-out"].__globals__, "_now_iso", lambda: "2026-04-03T11:00:00Z")
         _confirm(conn, env["reservation_id"])
         _check_in(conn, env["reservation_id"], env["room_101_id"])
         result = call_action(
             ACTIONS["hospitality-check-out"], conn,
-            ns(reservation_id=env["reservation_id"]),
+            ns(reservation_id=env["reservation_id"],
+               receivable_account_id=env["ar"],
+               revenue_account_id=env["revenue"],
+               cost_center_id=env["cost_center_id"]),
         )
         assert is_ok(result), result
         assert result["reservation_status"] == "checked_out"
@@ -330,6 +334,8 @@ class TestAddCharge:
     """hospitality-add-charge"""
 
     def test_add_charge_ok(self, conn, env):
+        _confirm(conn, env["reservation_id"])
+        _check_in(conn, env["reservation_id"], env["room_101_id"])
         result = call_action(
             ACTIONS["hospitality-add-charge"], conn,
             ns(reservation_id=env["reservation_id"],
@@ -343,6 +349,8 @@ class TestAddCharge:
         assert result["amount"] == "150.00"
 
     def test_add_charge_invalid_type(self, conn, env):
+        _confirm(conn, env["reservation_id"])
+        _check_in(conn, env["reservation_id"], env["room_101_id"])
         result = call_action(
             ACTIONS["hospitality-add-charge"], conn,
             ns(reservation_id=env["reservation_id"],
@@ -353,6 +361,8 @@ class TestAddCharge:
         assert is_error(result)
 
     def test_add_charge_missing_amount(self, conn, env):
+        _confirm(conn, env["reservation_id"])
+        _check_in(conn, env["reservation_id"], env["room_101_id"])
         result = call_action(
             ACTIONS["hospitality-add-charge"], conn,
             ns(reservation_id=env["reservation_id"],
@@ -367,6 +377,8 @@ class TestListFolioCharges:
     """hospitality-list-folio-charges"""
 
     def test_list_charges(self, conn, env):
+        _confirm(conn, env["reservation_id"])
+        _check_in(conn, env["reservation_id"], env["room_101_id"])
         # Add a charge first
         call_action(
             ACTIONS["hospitality-add-charge"], conn,

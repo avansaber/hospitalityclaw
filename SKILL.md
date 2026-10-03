@@ -68,7 +68,7 @@ python3 {baseDir}/scripts/db_query.py --action status
 --action hospitality-check-in --reservation-id {id} --room-id {id}
 --action hospitality-add-charge --reservation-id {id} --charge-type room --description "Night 1" --amount "199.00" --company-id {id}
 --action hospitality-add-room-service-order --reservation-id {id} --outlet-id {id} --items-json '[{"name":"Club Sandwich","qty":1,"price":"18.00"}]' --total-amount "18.00" --company-id {id}
---action hospitality-check-out --reservation-id {id}
+--action hospitality-check-out --reservation-id {id} --receivable-account-id {id} --revenue-account-id {id} --cost-center-id {id}
 ```
 
 ## All Actions (Tier 2)
@@ -111,7 +111,7 @@ For all actions: `python3 {baseDir}/scripts/db_query.py --action <action> [flags
 | Action | Required Flags | Optional Flags |
 |--------|---------------|----------------|
 | `hospitality-check-in` | `--reservation-id --room-id` | |
-| `hospitality-check-out` | `--reservation-id` | |
+| `hospitality-check-out` | `--reservation-id` | `--receivable-account-id --revenue-account-id --cost-center-id (required when the stay has a room rate or folio charges; checkout bills the room nights not already on the folio)` |
 | `hospitality-assign-room` | `--reservation-id --room-id` | |
 | `hospitality-add-guest-request` | `--reservation-id --request-type --description --company-id` | `--priority --assigned-to` |
 | `hospitality-list-guest-requests` | | `--reservation-id --request-status --company-id --limit --offset` |
@@ -153,7 +153,7 @@ For all actions: `python3 {baseDir}/scripts/db_query.py --action <action> [flags
 | `hospitality-occupancy-forecast` | `--company-id --start-date --end-date` | |
 | `hospitality-revpar-report` | `--company-id --start-date --end-date` | |
 | `hospitality-adr-report` | `--company-id --start-date --end-date` | |
-| `hospitality-revenue-summary` | `--company-id` | `--start-date --end-date` |
+| `hospitality-revenue-summary` | `--company-id` | `--start-date --end-date` (room nights counted once from reservation) |
 | `hospitality-set-seasonal-rates` | `--room-type-id --start-date --end-date --adjusted-rate --company-id` | `--reason` |
 | `hospitality-yield-analysis` | `--company-id --start-date --end-date` | |
 
@@ -173,7 +173,7 @@ For all actions: `python3 {baseDir}/scripts/db_query.py --action <action> [flags
 | Action | Required Flags | Optional Flags |
 |--------|---------------|----------------|
 | `hospitality-occupancy-report` | `--company-id` | `--start-date --end-date` |
-| `hospitality-revenue-report` | `--company-id` | `--start-date --end-date` |
+| `hospitality-revenue-report` | `--company-id` | `--start-date --end-date` (room nights counted once from reservation) |
 | `hospitality-housekeeping-report` | `--company-id` | `--start-date --end-date` |
 | `hospitality-guest-satisfaction-report` | `--company-id` | `--start-date --end-date` |
 | `hospitality-daily-operations-report` | `--company-id` | `--report-date` |

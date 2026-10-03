@@ -25,6 +25,8 @@ try:
 except ImportError:
     pass
 
+SKILL = "hospitalityclaw"
+
 _now_iso = lambda: datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 VALID_OUTLET_TYPES = ("restaurant", "bar", "room_service", "banquet", "pool")
@@ -74,7 +76,7 @@ def add_outlet(conn, args):
     })
 
     conn.execute(sql, (out_id, name, ot, getattr(args, "operating_hours", None), args.company_id, now))
-    audit(conn, "hospitalityclaw_outlet", out_id, "hospitality-add-outlet", args.company_id)
+    audit(conn, SKILL, "hospitality-add-outlet", "hospitalityclaw_outlet", out_id)
     conn.commit()
     ok({"id": out_id, "name": name, "outlet_type": ot})
 
@@ -166,7 +168,7 @@ def add_room_service_order(conn, args):
         str(round_currency(to_decimal(total_amount))),
         "pending", company_id, now,
     ))
-    audit(conn, "hospitalityclaw_room_service_order", order_id, "hospitality-add-room-service-order", company_id)
+    audit(conn, SKILL, "hospitality-add-room-service-order", "hospitalityclaw_room_service_order", order_id)
     conn.commit()
     ok({"id": order_id, "naming_series": naming, "order_status": "pending",
         "total_amount": str(round_currency(to_decimal(total_amount)))})
@@ -246,7 +248,7 @@ def complete_room_service_order(conn, args):
         "UPDATE hospitalityclaw_room_service_order SET order_status = 'delivered' WHERE id = ?",
         (order_id,)
     )
-    audit(conn, "hospitalityclaw_room_service_order", order_id, "hospitality-complete-room-service-order", None)
+    audit(conn, SKILL, "hospitality-complete-room-service-order", "hospitalityclaw_room_service_order", order_id)
     conn.commit()
     ok({"id": order_id, "order_status": "delivered"})
 
@@ -290,7 +292,7 @@ def add_minibar_consumption(conn, args):
         str(up), str(total), consumption_date,
         company_id, now,
     ))
-    audit(conn, "hospitalityclaw_minibar_consumption", mb_id, "hospitality-add-minibar-consumption", company_id)
+    audit(conn, SKILL, "hospitality-add-minibar-consumption", "hospitalityclaw_minibar_consumption", mb_id)
     conn.commit()
     ok({"id": mb_id, "item_name": item_name, "quantity": qty, "total": str(total)})
 

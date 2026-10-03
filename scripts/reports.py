@@ -32,6 +32,41 @@ def _validate_company(conn, company_id):
         err(f"Company {company_id} not found")
 
 
+def _room_and_folio_revenue(conn, company_id, sd, ed):
+    res_t = Table("hospitalityclaw_reservation")
+    q_res = (
+        Q.from_(res_t)
+        .select(res_t.id, res_t.total_amount)
+        .where(res_t.company_id == P())
+        .where(res_t.check_in_date >= P())
+        .where(res_t.check_in_date <= P())
+        .where(res_t.reservation_status.isin([P(), P(), P()]))
+    )
+    res_rows = conn.execute(
+        q_res.get_sql(), (company_id, sd, ed, "confirmed", "checked_in", "checked_out")
+    ).fetchall()
+    room_rev = Decimal("0")
+    counted_ids = set()
+    for res_row in res_rows:
+        counted_ids.add(res_row[0])
+        room_rev += to_decimal(res_row[1])
+    folio_t = Table("hospitalityclaw_folio_charge")
+    q_folio = (
+        Q.from_(folio_t)
+        .select(folio_t.reservation_id, folio_t.charge_type, folio_t.amount)
+        .where(folio_t.company_id == P())
+        .where(folio_t.charge_date >= P())
+        .where(folio_t.charge_date <= P())
+    )
+    folio_rows = conn.execute(q_folio.get_sql(), (company_id, sd, ed)).fetchall()
+    folio_rev = Decimal("0")
+    for folio_row in folio_rows:
+        if folio_row[1] == "room" and folio_row[0] in counted_ids:
+            continue
+        folio_rev += to_decimal(folio_row[2])
+    return room_rev, folio_rev
+
+
 # ---------------------------------------------------------------------------
 # 1. occupancy-report
 # ---------------------------------------------------------------------------
@@ -77,24 +112,13 @@ def revenue_report(conn, args):
     sd = getattr(args, "start_date", None) or "2000-01-01"
     ed = getattr(args, "end_date", None) or "2099-12-31"
 
-    room_rev = conn.execute(
-        "SELECT COALESCE(SUM(CAST(total_amount AS NUMERIC)), 0) FROM hospitalityclaw_reservation "
-        "WHERE company_id = ? AND check_in_date >= ? AND check_in_date <= ? "
-        "AND reservation_status IN ('confirmed','checked_in','checked_out')",
-        (args.company_id, sd, ed)
-    ).fetchone()[0]
-
-    folio_rev = conn.execute(
-        "SELECT COALESCE(SUM(CAST(amount AS NUMERIC)), 0) FROM hospitalityclaw_folio_charge "
-        "WHERE company_id = ? AND charge_date >= ? AND charge_date <= ?",
-        (args.company_id, sd, ed)
-    ).fetchone()[0]
+    room_rev, folio_rev = _room_and_folio_revenue(conn, args.company_id, sd, ed)
 
     ok({
         "start_date": sd, "end_date": ed,
-        "room_revenue": str(round_currency(to_decimal(str(room_rev)))),
-        "folio_revenue": str(round_currency(to_decimal(str(folio_rev)))),
-        "total_revenue": str(round_currency(to_decimal(str(room_rev + folio_rev)))),
+        "room_revenue": str(round_currency(room_rev)),
+        "folio_revenue": str(round_currency(folio_rev)),
+        "total_revenue": str(round_currency(room_rev + folio_rev)),
         "report_type": "revenue",
     })
 

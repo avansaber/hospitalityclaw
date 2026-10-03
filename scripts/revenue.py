@@ -22,6 +22,8 @@ try:
 except ImportError:
     pass
 
+SKILL = "hospitalityclaw"
+
 _now_iso = lambda: datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 VALID_ADJUSTMENT_TYPES = ("increase", "decrease", "override")
@@ -33,6 +35,41 @@ def _validate_company(conn, company_id):
     row = conn.execute(Q.from_(Table("company")).select(Field("id")).where(Field("id") == P()).get_sql(), (company_id,)).fetchone()
     if not row:
         err(f"Company {company_id} not found")
+
+
+def _room_and_folio_revenue(conn, company_id, sd, ed):
+    res_t = Table("hospitalityclaw_reservation")
+    q_res = (
+        Q.from_(res_t)
+        .select(res_t.id, res_t.total_amount)
+        .where(res_t.company_id == P())
+        .where(res_t.check_in_date >= P())
+        .where(res_t.check_in_date <= P())
+        .where(res_t.reservation_status.isin([P(), P(), P()]))
+    )
+    res_rows = conn.execute(
+        q_res.get_sql(), (company_id, sd, ed, "confirmed", "checked_in", "checked_out")
+    ).fetchall()
+    room_rev = Decimal("0")
+    counted_ids = set()
+    for res_row in res_rows:
+        counted_ids.add(res_row[0])
+        room_rev += to_decimal(res_row[1])
+    folio_t = Table("hospitalityclaw_folio_charge")
+    q_folio = (
+        Q.from_(folio_t)
+        .select(folio_t.reservation_id, folio_t.charge_type, folio_t.amount)
+        .where(folio_t.company_id == P())
+        .where(folio_t.charge_date >= P())
+        .where(folio_t.charge_date <= P())
+    )
+    folio_rows = conn.execute(q_folio.get_sql(), (company_id, sd, ed)).fetchall()
+    folio_rev = Decimal("0")
+    for folio_row in folio_rows:
+        if folio_row[1] == "room" and folio_row[0] in counted_ids:
+            continue
+        folio_rev += to_decimal(folio_row[2])
+    return room_rev, folio_rev
 
 
 def _validate_room_type(conn, room_type_id):
@@ -80,7 +117,7 @@ def add_rate_adjustment(conn, args):
         getattr(args, "reason", None),
         company_id, now,
     ))
-    audit(conn, "hospitalityclaw_rate_adjustment", ra_id, "hospitality-add-rate-adjustment", company_id)
+    audit(conn, SKILL, "hospitality-add-rate-adjustment", "hospitalityclaw_rate_adjustment", ra_id)
     conn.commit()
     ok({"id": ra_id, "adjustment_type": adj_type, "adjustment_date": adj_date})
 
@@ -261,18 +298,7 @@ def revenue_summary(conn, args):
     sd = getattr(args, "start_date", None) or "2000-01-01"
     ed = getattr(args, "end_date", None) or "2099-12-31"
 
-    room_revenue = conn.execute(
-        "SELECT COALESCE(SUM(CAST(total_amount AS NUMERIC)), 0) FROM hospitalityclaw_reservation "
-        "WHERE company_id = ? AND check_in_date >= ? AND check_in_date <= ? "
-        "AND reservation_status IN ('confirmed','checked_in','checked_out')",
-        (args.company_id, sd, ed)
-    ).fetchone()[0]
-
-    folio_revenue = conn.execute(
-        "SELECT COALESCE(SUM(CAST(amount AS NUMERIC)), 0) FROM hospitalityclaw_folio_charge "
-        "WHERE company_id = ? AND charge_date >= ? AND charge_date <= ?",
-        (args.company_id, sd, ed)
-    ).fetchone()[0]
+    room_revenue, folio_revenue = _room_and_folio_revenue(conn, args.company_id, sd, ed)
 
     fnb_revenue = conn.execute(
         "SELECT COALESCE(SUM(CAST(total_amount AS NUMERIC)), 0) FROM hospitalityclaw_room_service_order "
@@ -287,16 +313,16 @@ def revenue_summary(conn, args):
         (args.company_id, sd, ed)
     ).fetchone()[0]
 
-    total = room_revenue + folio_revenue + fnb_revenue + minibar_revenue
+    total = room_revenue + folio_revenue + to_decimal(str(fnb_revenue)) + to_decimal(str(minibar_revenue))
 
     ok({
         "start_date": sd,
         "end_date": ed,
-        "room_revenue": str(round_currency(to_decimal(str(room_revenue)))),
-        "folio_revenue": str(round_currency(to_decimal(str(folio_revenue)))),
+        "room_revenue": str(round_currency(room_revenue)),
+        "folio_revenue": str(round_currency(folio_revenue)),
         "fnb_revenue": str(round_currency(to_decimal(str(fnb_revenue)))),
         "minibar_revenue": str(round_currency(to_decimal(str(minibar_revenue)))),
-        "total_revenue": str(round_currency(to_decimal(str(total)))),
+        "total_revenue": str(round_currency(total)),
         "report_type": "revenue_summary",
     })
 
@@ -334,7 +360,7 @@ def set_seasonal_rates(conn, args):
         getattr(args, "reason", None) or f"Seasonal rate {sd} to {ed}",
         company_id, now,
     ))
-    audit(conn, "hospitalityclaw_rate_adjustment", ra_id, "hospitality-set-seasonal-rates", company_id)
+    audit(conn, SKILL, "hospitality-set-seasonal-rates", "hospitalityclaw_rate_adjustment", ra_id)
     conn.commit()
     ok({"id": ra_id, "start_date": sd, "end_date": ed,
         "adjusted_rate": str(round_currency(to_decimal(adjusted_rate)))})

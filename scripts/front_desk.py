@@ -18,11 +18,13 @@ try:
     from erpclaw_lib.decimal_utils import to_decimal, round_currency
     from erpclaw_lib.response import ok, err, row_to_dict
     from erpclaw_lib.audit import audit
-    from erpclaw_lib.query import Q, P, Table, Field, fn, Order, insert_row
+    from erpclaw_lib.query import Q, P, Table, Field, fn, Order, insert_row, update_row, now as sql_now
 except ImportError:
     pass
 
-# GL posting -- optional (graceful degradation if erpclaw-setup not installed)
+SKILL = "hospitalityclaw"
+
+# GL posting for checkout folio close (required when the folio has charges)
 try:
     from erpclaw_lib.gl_posting import insert_gl_entries
     HAS_GL = True
@@ -97,14 +99,14 @@ def check_in(conn, args):
         (now, res["guest_id"])
     )
 
-    audit(conn, "hospitalityclaw_reservation", res["id"], "hospitality-check-in", None, {"room_id": room_id})
+    audit(conn, SKILL, "hospitality-check-in", "hospitalityclaw_reservation", res["id"], new_values={"room_id": room_id})
     conn.commit()
     ok({"reservation_id": res["id"], "room_id": room_id,
         "reservation_status": "checked_in", "room_number": room["room_number"]})
 
 
 # ---------------------------------------------------------------------------
-# 2. check-out (with optional GL posting for folio close)
+# 2. check-out (with GL posting for folio close)
 # ---------------------------------------------------------------------------
 def _build_checkout_gl_entries(conn, reservation_id, receivable_account_id,
                                 revenue_account_id, cost_center_id, customer_id):
@@ -117,6 +119,8 @@ def _build_checkout_gl_entries(conn, reservation_id, receivable_account_id,
         - all other charges -> revenue_account_id (Other Revenue)
 
     If only one revenue account is provided, all credits go there.
+    A negative bucket passes its negative amount as credit, which the
+    posting path turns into a debit on the revenue account.
     Returns list of entry dicts, or empty list if no charges.
     """
     # Fetch all folio charges and aggregate by category using Python Decimal
@@ -167,7 +171,7 @@ def _build_checkout_gl_entries(conn, reservation_id, receivable_account_id,
     # CR: Revenue entries (only add non-zero buckets)
     # All go to the same revenue_account_id (single revenue account provided)
     # but separated for clarity in the ledger via remarks
-    if room_total > Decimal("0"):
+    if room_total != Decimal("0"):
         entries.append({
             "account_id": revenue_account_id,
             "debit": "0",
@@ -175,7 +179,7 @@ def _build_checkout_gl_entries(conn, reservation_id, receivable_account_id,
             "cost_center_id": cost_center_id,
         })
 
-    if fnb_total > Decimal("0"):
+    if fnb_total != Decimal("0"):
         entries.append({
             "account_id": revenue_account_id,
             "debit": "0",
@@ -183,7 +187,7 @@ def _build_checkout_gl_entries(conn, reservation_id, receivable_account_id,
             "cost_center_id": cost_center_id,
         })
 
-    if other_total > Decimal("0"):
+    if other_total != Decimal("0"):
         entries.append({
             "account_id": revenue_account_id,
             "debit": "0",
@@ -199,6 +203,54 @@ def check_out(conn, args):
     if res["reservation_status"] != "checked_in":
         err(f"Cannot check out reservation in '{res['reservation_status']}' status (must be checked_in)")
 
+    receivable_account_id = getattr(args, "receivable_account_id", None)
+    revenue_account_id = getattr(args, "revenue_account_id", None)
+    cost_center_id = getattr(args, "cost_center_id", None)
+
+    # Read the folio total before any write so a checkout with charges is
+    # refused before the stay, room or guest rows change.
+    q = Q.from_(_t_folio).select(_t_folio.amount).where(_t_folio.reservation_id == P())
+    folio_rows = conn.execute(q.get_sql(), (res["id"],)).fetchall()
+    folio_total = sum(to_decimal(r[0]) for r in folio_rows) if folio_rows else Decimal("0")
+    folio_total = round_currency(folio_total)
+
+    # Bill the room nights not already on the folio: nights x nightly rate
+    # less positive room rows the operator entered by hand. A negative room
+    # row is a discount adjustment and never offsets the nights.
+    room_nights = round_currency(to_decimal(res["rate_amount"]) * Decimal(int(res["nights"])))
+    q = Q.from_(_t_folio).select(_t_folio.charge_type, _t_folio.amount).where(_t_folio.reservation_id == P())
+    room_rows = conn.execute(q.get_sql(), (res["id"],)).fetchall()
+    room_on_folio = sum(
+        to_decimal(r[1]) for r in room_rows
+        if r[0] == "room" and to_decimal(r[1]) > Decimal("0")
+    ) if room_rows else Decimal("0")
+    room_on_folio = round_currency(room_on_folio)
+    if room_nights > room_on_folio:
+        room_due = round_currency(room_nights - room_on_folio)
+    else:
+        room_due = Decimal("0.00")
+    folio_total = round_currency(folio_total + room_due)
+
+    customer_id = None
+    if folio_total < Decimal("0"):
+        err(f"folio total {folio_total} is negative; a checkout that owes the guest money cannot be posted")
+    if folio_total > Decimal("0"):
+        if not receivable_account_id or not revenue_account_id:
+            err("--receivable-account-id and --revenue-account-id are required to check out a reservation with folio charges")
+        if not HAS_GL:
+            err("GL posting is not available; a checkout with folio charges cannot be completed")
+        _t_account = Table("account")
+        for _account_id in (receivable_account_id, revenue_account_id):
+            _type_query = Q.from_(_t_account).select(_t_account.account_type).where(_t_account.id == P())
+            _type_row = conn.execute(_type_query.get_sql(), (_account_id,)).fetchone()
+            if _type_row and _type_row[0] == "stock":
+                err("checkout posting cannot use a stock account: it would move a stock account with no stock ledger entry")
+        q = Q.from_(_t_guest_ext).select(_t_guest_ext.customer_id).where(_t_guest_ext.id == P())
+        guest_ext = conn.execute(q.get_sql(), (res["guest_id"],)).fetchone()
+        customer_id = guest_ext[0] if guest_ext else None
+        if not customer_id:
+            err("guest has no linked customer; a checkout with folio charges cannot be posted")
+
     now = _now_iso()
     conn.execute(
         "UPDATE hospitalityclaw_reservation SET reservation_status = 'checked_out', updated_at = ? WHERE id = ?",
@@ -212,11 +264,21 @@ def check_out(conn, args):
             (now, res["room_id"])
         )
 
-    # Update guest_ext total_spent (use Decimal for accuracy)
-    q = Q.from_(_t_folio).select(_t_folio.amount).where(_t_folio.reservation_id == P())
-    folio_rows = conn.execute(q.get_sql(), (res["id"],)).fetchall()
-    folio_total = sum(to_decimal(r[0]) for r in folio_rows) if folio_rows else Decimal("0")
-    folio_total = round_currency(folio_total)
+    # Bill the unbilled room nights as one room folio row, in the same
+    # transaction as the checkout posting below.
+    if room_due > Decimal("0"):
+        room_charge_id = str(uuid.uuid4())
+        sql, _ = insert_row("hospitalityclaw_folio_charge", {
+            "id": P(), "reservation_id": P(), "charge_date": P(), "charge_type": P(),
+            "description": P(), "amount": P(), "company_id": P(), "created_at": P(),
+        })
+        conn.execute(sql, (
+            room_charge_id, res["id"], now[:10], "room",
+            "Room nights: %s x %s" % (res["nights"], res["rate_amount"]),
+            str(room_due), res["company_id"], now,
+        ))
+        audit(conn, SKILL, "hospitality-check-out", "hospitalityclaw_folio_charge", room_charge_id,
+              new_values={"amount": str(room_due), "nights": res["nights"], "rate_amount": res["rate_amount"]})
 
     # Update guest_ext total_spent using Decimal math (not CAST AS REAL)
     q = Q.from_(_t_guest_ext).select(_t_guest_ext.total_spent).where(_t_guest_ext.id == P())
@@ -228,62 +290,47 @@ def check_out(conn, args):
         (str(new_spent), now, res["guest_id"])
     )
 
-    # --- GL Posting (optional -- graceful degradation) ---
+    # The ledger posts in the same transaction or the checkout is refused.
     gl_entry_ids = []
-    gl_error = None
-    receivable_account_id = getattr(args, "receivable_account_id", None)
-    revenue_account_id = getattr(args, "revenue_account_id", None)
-    cost_center_id = getattr(args, "cost_center_id", None)
-
-    if HAS_GL and receivable_account_id and revenue_account_id and folio_total > Decimal("0"):
+    if folio_total > Decimal("0"):
         try:
-            # Look up customer_id from guest_ext
-            q = Q.from_(_t_guest_ext).select(_t_guest_ext.customer_id).where(_t_guest_ext.id == P())
-            guest_ext = conn.execute(q.get_sql(), (res["guest_id"],)).fetchone()
-            customer_id = guest_ext[0] if guest_ext else None
+            gl_entries = _build_checkout_gl_entries(
+                conn, res["id"],
+                receivable_account_id, revenue_account_id,
+                cost_center_id, customer_id,
+            )
 
-            if not customer_id:
-                gl_error = "Guest has no linked customer_id; GL posting skipped"
-            else:
-                gl_entries = _build_checkout_gl_entries(
-                    conn, res["id"],
-                    receivable_account_id, revenue_account_id,
-                    cost_center_id, customer_id,
+            if gl_entries:
+                posting_date = now[:10]  # ISO date portion
+                gl_entry_ids = insert_gl_entries(
+                    conn, gl_entries,
+                    voucher_type="journal_entry",
+                    voucher_id=res["id"],
+                    posting_date=posting_date,
+                    company_id=res["company_id"],
+                    remarks=f"HospitalityClaw checkout folio close for reservation {res['id']}",
                 )
-
-                if gl_entries:
-                    posting_date = now[:10]  # ISO date portion
-                    gl_entry_ids = insert_gl_entries(
-                        conn, gl_entries,
-                        voucher_type="hospitality_checkout",
-                        voucher_id=res["id"],
-                        posting_date=posting_date,
-                        company_id=res["company_id"],
-                        remarks=f"HospitalityClaw checkout folio close for reservation {res['id']}",
-                    )
-                    # Store GL entry IDs on the reservation
-                    conn.execute(
-                        "UPDATE hospitalityclaw_reservation SET gl_entry_ids = ? WHERE id = ?",
-                        (json.dumps(gl_entry_ids), res["id"])
-                    )
+                # Store GL entry IDs on the reservation
+                conn.execute(
+                    "UPDATE hospitalityclaw_reservation SET gl_entry_ids = ? WHERE id = ?",
+                    (json.dumps(gl_entry_ids), res["id"])
+                )
         except Exception as e:
-            # GL posting is optional -- do not block checkout
-            gl_error = str(e)
+            conn.rollback()
+            err(f"GL posting failed, checkout rolled back: {e}")
 
-    audit(conn, "hospitalityclaw_reservation", res["id"], "hospitality-check-out", None)
+    audit(conn, SKILL, "hospitality-check-out", "hospitalityclaw_reservation", res["id"])
     conn.commit()
 
     result = {
         "reservation_id": res["id"],
         "reservation_status": "checked_out",
         "folio_total": str(folio_total),
+        "room_nights_billed": str(room_due),
     }
     if gl_entry_ids:
         result["gl_entry_ids"] = gl_entry_ids
         result["gl_posted"] = True
-    elif gl_error:
-        result["gl_posted"] = False
-        result["gl_warning"] = gl_error
     else:
         result["gl_posted"] = False
 
@@ -302,10 +349,12 @@ def assign_room(conn, args):
     room = _validate_room(conn, room_id)
 
     conn.execute(
-        "UPDATE hospitalityclaw_reservation SET room_id = ?, updated_at = datetime('now') WHERE id = ?",
+        update_row("hospitalityclaw_reservation",
+                   data={"room_id": P(), "updated_at": sql_now()},
+                   where={"id": P()}),
         (room_id, res["id"])
     )
-    audit(conn, "hospitalityclaw_reservation", res["id"], "hospitality-assign-room", None, {"room_id": room_id})
+    audit(conn, SKILL, "hospitality-assign-room", "hospitalityclaw_reservation", res["id"], new_values={"room_id": room_id})
     conn.commit()
     ok({"reservation_id": res["id"], "room_id": room_id, "room_number": room["room_number"]})
 
@@ -344,7 +393,7 @@ def add_guest_request(conn, args):
         getattr(args, "assigned_to", None), None,
         company_id, now,
     ))
-    audit(conn, "hospitalityclaw_guest_request", req_id, "hospitality-add-guest-request", company_id)
+    audit(conn, SKILL, "hospitality-add-guest-request", "hospitalityclaw_guest_request", req_id)
     conn.commit()
     ok({"id": req_id, "request_type": rt, "priority": priority, "request_status": "open"})
 
@@ -397,7 +446,7 @@ def complete_guest_request(conn, args):
         "UPDATE hospitalityclaw_guest_request SET request_status = 'completed', completed_at = ? WHERE id = ?",
         (now, req_id)
     )
-    audit(conn, "hospitalityclaw_guest_request", req_id, "hospitality-complete-guest-request", None)
+    audit(conn, SKILL, "hospitality-complete-guest-request", "hospitalityclaw_guest_request", req_id)
     conn.commit()
     ok({"id": req_id, "request_status": "completed"})
 
@@ -422,10 +471,13 @@ def late_checkout(conn, args):
     total = round_currency(rate_dec * Decimal(nights))
 
     conn.execute(
-        "UPDATE hospitalityclaw_reservation SET check_out_date = ?, nights = ?, total_amount = ?, updated_at = datetime('now') WHERE id = ?",
+        update_row("hospitalityclaw_reservation",
+                   data={"check_out_date": P(), "nights": P(), "total_amount": P(),
+                         "updated_at": sql_now()},
+                   where={"id": P()}),
         (new_co, nights, str(total), res["id"])
     )
-    audit(conn, "hospitalityclaw_reservation", res["id"], "hospitality-late-checkout", None, {"new_checkout_date": new_co})
+    audit(conn, SKILL, "hospitality-late-checkout", "hospitalityclaw_reservation", res["id"], new_values={"new_checkout_date": new_co})
     conn.commit()
     ok({"reservation_id": res["id"], "new_checkout_date": new_co, "nights": nights, "total_amount": str(total)})
 
@@ -463,9 +515,9 @@ def room_move(conn, args):
         (new_room_id, now, res["id"])
     )
 
-    audit(conn, "hospitalityclaw_reservation", res["id"], "hospitality-room-move", None,
-          {"old_room_id": old_room_id, "new_room_id": new_room_id,
-           "reason": getattr(args, "reason", None)})
+    audit(conn, SKILL, "hospitality-room-move", "hospitalityclaw_reservation", res["id"],
+          new_values={"old_room_id": old_room_id, "new_room_id": new_room_id,
+                      "reason": getattr(args, "reason", None)})
     conn.commit()
     ok({"reservation_id": res["id"], "old_room_id": old_room_id,
         "new_room_id": new_room_id, "new_room_number": new_room["room_number"]})
@@ -476,6 +528,8 @@ def room_move(conn, args):
 # ---------------------------------------------------------------------------
 def add_charge(conn, args):
     res = _validate_reservation(conn, getattr(args, "reservation_id", None))
+    if res["reservation_status"] != "checked_in":
+        err(f"Reservation {res['id']} is '{res['reservation_status']}'; charges can be added only while checked in")
 
     ct = getattr(args, "charge_type", None)
     if not ct:
@@ -505,7 +559,7 @@ def add_charge(conn, args):
         str(round_currency(to_decimal(amount))),
         company_id, now,
     ))
-    audit(conn, "hospitalityclaw_folio_charge", charge_id, "hospitality-add-charge", company_id)
+    audit(conn, SKILL, "hospitality-add-charge", "hospitalityclaw_folio_charge", charge_id)
     conn.commit()
     ok({"id": charge_id, "charge_type": ct, "amount": str(round_currency(to_decimal(amount)))})
 

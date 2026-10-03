@@ -19,12 +19,14 @@ try:
     from erpclaw_lib.naming import get_next_name, ENTITY_PREFIXES
     from erpclaw_lib.response import ok, err, row_to_dict
     from erpclaw_lib.audit import audit
-    from erpclaw_lib.query import Q, P, Table, Field, fn, Order, insert_row
+    from erpclaw_lib.query import Q, P, Table, Field, fn, Order, insert_row, update_row, now as sql_now
 
     ENTITY_PREFIXES.setdefault("hospitalityclaw_room_type", "RMT-")
     ENTITY_PREFIXES.setdefault("hospitalityclaw_room", "RM-")
 except ImportError:
     pass
+
+SKILL = "hospitalityclaw"
 
 _now_iso = lambda: datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
@@ -98,7 +100,7 @@ def add_room_type(conn, args):
         getattr(args, "description", None),
         args.company_id, now, now,
     ))
-    audit(conn, "hospitalityclaw_room_type", rt_id, "hospitality-add-room-type", args.company_id)
+    audit(conn, SKILL, "hospitality-add-room-type", "hospitalityclaw_room_type", rt_id)
     conn.commit()
     ok({"id": rt_id, "naming_series": naming, "name": name})
 
@@ -137,10 +139,10 @@ def update_room_type(conn, args):
     if not updates:
         err("No fields to update")
 
-    updates.append("updated_at = datetime('now')")
+    updates.append(f"updated_at = {sql_now()}")
     params.append(rt_id)
     conn.execute(f"UPDATE hospitalityclaw_room_type SET {', '.join(updates)} WHERE id = ?", params)
-    audit(conn, "hospitalityclaw_room_type", rt_id, "hospitality-update-room-type", None, {"updated_fields": changed})
+    audit(conn, SKILL, "hospitality-update-room-type", "hospitalityclaw_room_type", rt_id, new_values={"updated_fields": changed})
     conn.commit()
     ok({"id": rt_id, "updated_fields": changed})
 
@@ -201,7 +203,7 @@ def add_room(conn, args):
         getattr(args, "notes", None),
         args.company_id, now, now,
     ))
-    audit(conn, "hospitalityclaw_room", rm_id, "hospitality-add-room", args.company_id)
+    audit(conn, SKILL, "hospitality-add-room", "hospitalityclaw_room", rm_id)
     conn.commit()
     ok({"id": rm_id, "naming_series": naming, "room_number": room_number, "room_status": "available"})
 
@@ -245,10 +247,10 @@ def update_room(conn, args):
     if not updates:
         err("No fields to update")
 
-    updates.append("updated_at = datetime('now')")
+    updates.append(f"updated_at = {sql_now()}")
     params.append(room_id)
     conn.execute(f"UPDATE hospitalityclaw_room SET {', '.join(updates)} WHERE id = ?", params)
-    audit(conn, "hospitalityclaw_room", room_id, "hospitality-update-room", None, {"updated_fields": changed})
+    audit(conn, SKILL, "hospitality-update-room", "hospitalityclaw_room", room_id, new_values={"updated_fields": changed})
     conn.commit()
     ok({"id": room_id, "updated_fields": changed})
 
@@ -323,9 +325,12 @@ def update_room_status(conn, args):
         err("--room-status is required")
     _validate_enum(rs, VALID_ROOM_STATUSES, "room-status")
 
-    conn.execute("UPDATE hospitalityclaw_room SET room_status = ?, updated_at = datetime('now') WHERE id = ?",
-                 (rs, room_id))
-    audit(conn, "hospitalityclaw_room", room_id, "hospitality-update-room-status", None, {"room_status": rs})
+    conn.execute(
+        update_row("hospitalityclaw_room",
+                   data={"room_status": P(), "updated_at": sql_now()},
+                   where={"id": P()}),
+        (rs, room_id))
+    audit(conn, SKILL, "hospitality-update-room-status", "hospitalityclaw_room", room_id, new_values={"room_status": rs})
     conn.commit()
     ok({"id": room_id, "room_status": rs})
 
@@ -350,7 +355,7 @@ def add_amenity(conn, args):
         "company_id": P(), "created_at": P(),
     })
     conn.execute(sql, (am_id, name, at, getattr(args, "description", None), args.company_id, now))
-    audit(conn, "hospitalityclaw_amenity", am_id, "hospitality-add-amenity", args.company_id)
+    audit(conn, SKILL, "hospitality-add-amenity", "hospitalityclaw_amenity", am_id)
     conn.commit()
     ok({"id": am_id, "name": name, "amenity_type": at})
 
@@ -406,7 +411,7 @@ def assign_amenity(conn, args):
         "id": P(), "room_id": P(), "amenity_id": P(), "company_id": P(),
     })
     conn.execute(sql, (ra_id, room_id, amenity_id, args.company_id))
-    audit(conn, "hospitalityclaw_room_amenity", ra_id, "hospitality-assign-amenity", args.company_id)
+    audit(conn, SKILL, "hospitality-assign-amenity", "hospitalityclaw_room_amenity", ra_id)
     conn.commit()
     ok({"id": ra_id, "room_id": room_id, "amenity_id": amenity_id})
 

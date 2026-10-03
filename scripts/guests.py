@@ -34,6 +34,8 @@ try:
 except ImportError:
     pass
 
+SKILL = "hospitalityclaw"
+
 _now_iso = lambda: datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 VALID_VIP_LEVELS = ("regular", "silver", "gold", "platinum", "diamond")
@@ -114,7 +116,7 @@ def add_guest(conn, args):
         vip, 0, 0, "0", 1,
         args.company_id, now, now,
     ))
-    audit(conn, "hospitalityclaw_guest_ext", guest_id, "hospitality-add-guest", args.company_id)
+    audit(conn, SKILL, "hospitality-add-guest", "hospitalityclaw_guest_ext", guest_id)
     conn.commit()
     ok({"id": guest_id, "customer_id": customer_id, "naming_series": naming,
         "customer_name": name, "vip_level": vip})
@@ -181,7 +183,7 @@ def update_guest(conn, args):
         sql, params_du = dynamic_update("hospitalityclaw_guest_ext", ext_data, {"id": guest_id})
         conn.execute(sql, params_du)
 
-    audit(conn, "hospitalityclaw_guest_ext", guest_id, "hospitality-update-guest", None, {"updated_fields": changed})
+    audit(conn, SKILL, "hospitality-update-guest", "hospitalityclaw_guest_ext", guest_id, new_values={"updated_fields": changed})
     conn.commit()
     ok({"id": guest_id, "customer_id": customer_id, "updated_fields": changed})
 
@@ -268,7 +270,7 @@ def add_guest_preference(conn, args):
     })
 
     conn.execute(sql, (pref_id, guest_id, pt, pv, args.company_id, now))
-    audit(conn, "hospitalityclaw_guest_preference", pref_id, "hospitality-add-guest-preference", args.company_id)
+    audit(conn, SKILL, "hospitality-add-guest-preference", "hospitalityclaw_guest_preference", pref_id)
     conn.commit()
     ok({"id": pref_id, "guest_id": guest_id, "preference_type": pt, "preference_value": pv})
 
